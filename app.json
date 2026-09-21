@@ -1,0 +1,50 @@
+{
+  "expo": {
+    "name": "cide",
+    "slug": "cide-mobile",
+    "version": "0.1.0",
+    "orientation": "default",
+    "scheme": "cide",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "android": {
+      "package": "dev.cide.mobile",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "monochromeImage": "./assets/monochrome-icon.png",
+        "backgroundColor": "#0d1117"
+      }
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ],
+      "expo-asset",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "cide uses the camera once, to read the pairing code shown on your computer. No photo is saved and nothing leaves the phone.",
+          "recordAudioAndroid": false
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/monochrome-icon.png",
+          "color": "#e76831"
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": false
+    },
+    "icon": "./assets/icon.png"
+  }
+}
