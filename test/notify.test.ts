@@ -7,7 +7,7 @@
  * dealt with, and neither raises an error.
  */
 import { describe, expect, it } from 'vitest'
-import { COLLAPSE_AT, acknowledge, decide, idFor, type Ledger } from '../src/notify/decide'
+import { COLLAPSE_AT, acknowledge, decide, idFor, summaryId, type Ledger } from '../src/notify/decide'
 import type { AwaitingEntry, SessionId } from '../src/protocol/generated'
 
 const s = (n: number) => `0000000${n}-0000-4000-8000-000000000000` as SessionId
@@ -17,7 +17,9 @@ const input = (over: Partial<Parameters<typeof decide>[0]> = {}) => ({
   instanceId: 'i-1',
   instanceLabel: 'thinkpad',
   awaiting: [] as AwaitingEntry[],
-  labels: { [s(1)]: 'claude', [s(2)]: 'reviewer' },
+  labels: Object.fromEntries(
+    Array.from({ length: 9 }, (_, i) => [s(i), { console: i === 2 ? 'reviewer' : `claude ${i}`, project: 'cide' }]),
+  ),
   ended: [],
   ledger: {} as Ledger,
   openSession: null,
@@ -29,7 +31,8 @@ describe('decide', () => {
   it('announces a wait it has not announced', () => {
     const out = decide(input({ awaiting: [waiting(1, 1000)] }))
     expect(out.raise).toHaveLength(1)
-    expect(out.raise[0]!.title).toBe('thinkpad — claude')
+    expect(out.raise[0]!.title).toBe('thinkpad · cide')
+    expect(out.raise[0]!.body).toBe('claude 1 is waiting for you.')
     expect(out.raise[0]!.id).toBe(idFor('i-1', s(1), 1000))
     expect(out.ledger[s(1)]).toEqual({ announced: 1000, acked: false })
   })
@@ -80,17 +83,39 @@ describe('decide', () => {
     const many = Array.from({ length: COLLAPSE_AT + 2 }, (_, i) => waiting(i, 1000 + i))
     const out = decide(input({ awaiting: many }))
     expect(out.raise).toHaveLength(1)
-    expect(out.raise[0]!.body).toContain(`${COLLAPSE_AT + 2} sessions`)
+    expect(out.raise[0]!.body).toContain(`${COLLAPSE_AT + 2} waiting`)
+    expect(out.raise[0]!.body).toContain('cide/reviewer')
     // Every one of them is still recorded, so none of them is announced twice later.
     for (const entry of many) {
       expect(out.ledger[String(entry.session)]!.announced).toBe(Number(entry.sinceUnixMs))
     }
   })
 
+  it('takes the summary down once every wait in it has been read or has ended', () => {
+    const many = Array.from({ length: COLLAPSE_AT + 2 }, (_, i) => waiting(i, 1000 + i))
+    const burst = decide(input({ awaiting: many }))
+    expect(burst.raise[0]!.id).toBe(summaryId('i-1'))
+    expect(burst.dismiss).not.toContain(summaryId('i-1'))
+
+    // One opened, the rest still waiting: the summary is still true.
+    const one = acknowledge(burst.ledger, many[0]!.session)
+    expect(decide(input({ awaiting: many, ledger: one })).dismiss).not.toContain(summaryId('i-1'))
+
+    // All of them read, though still in cide's set: nothing left to tell anybody.
+    let all = burst.ledger
+    for (const entry of many) all = acknowledge(all, entry.session)
+    expect(decide(input({ awaiting: many, ledger: all })).dismiss).toContain(summaryId('i-1'))
+
+    // Or cide's set emptied: the same.
+    expect(decide(input({ awaiting: [], ledger: burst.ledger })).dismiss).toContain(
+      summaryId('i-1'),
+    )
+  })
+
   it('takes down what has stopped waiting', () => {
     const first = decide(input({ awaiting: [waiting(1, 1000)] }))
     const second = decide(input({ awaiting: [], ledger: first.ledger }))
-    expect(second.dismiss).toEqual([idFor('i-1', s(1), 1000)])
+    expect(second.dismiss).toEqual([idFor('i-1', s(1), 1000), summaryId('i-1')])
     expect(second.raise).toHaveLength(0)
   })
 
@@ -108,9 +133,29 @@ describe('decide', () => {
     expect(out.dismiss).not.toContain(out.raise[0]!.id)
   })
 
-  it('falls back to a name rather than showing an id', () => {
-    const out = decide(input({ awaiting: [waiting(9, 1000)] }))
-    expect(out.raise[0]!.title).toBe('thinkpad — a session')
+  it('holds back a wait on a session it cannot name yet, then announces it by name', () => {
+    // The reconnect race: `awaiting` lands before `sessions`. Announcing then said "a session",
+    // and its tap opened a console with no row behind it.
+    const early = decide(input({ awaiting: [waiting(9, 1000)] }))
+    expect(early.raise).toHaveLength(0)
+    expect(early.ledger[s(9)]).toBeUndefined()
+    const named = decide(
+      input({
+        awaiting: [waiting(9, 1000)],
+        ledger: early.ledger,
+        labels: { [s(9)]: { console: 'fix tests', project: 'selfcraft' } },
+      }),
+    )
+    expect(named.raise[0]!.title).toBe('thinkpad · selfcraft')
+    expect(named.raise[0]!.body).toBe('fix tests is waiting for you.')
+  })
+
+  it('titles with the machine alone while the project is unknown', () => {
+    const out = decide(
+      input({ awaiting: [waiting(1, 1000)], labels: { [s(1)]: { console: 'claude', project: null } } }),
+    )
+    expect(out.raise[0]!.title).toBe('thinkpad')
+    expect(out.raise[0]!.body).toBe('claude is waiting for you.')
   })
 })
 

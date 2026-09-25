@@ -10,6 +10,7 @@ import { Stack, useRouter } from 'expo-router'
 import * as Notifications from 'expo-notifications'
 import { StatusBar } from 'expo-status-bar'
 import { Text, View } from 'react-native'
+import { GestureHandlerRootView } from 'react-native-gesture-handler'
 import { getRandomBytes } from 'expo-crypto'
 import { installRandom } from '../src/crypto/random'
 import * as instances from '../src/store/instances'
@@ -103,7 +104,9 @@ export default function Layout() {
   }, [router])
 
   return (
-    <>
+    // The root every gesture detector needs above it — `ProjectSwipe`'s, today. Without it a
+    // `GestureDetector` throws on first render, on every screen that has one. (M91)
+    <GestureHandlerRootView style={{ flex: 1, backgroundColor: '#0d1117' }}>
       <StatusBar style="light" />
       <Stack
         screenOptions={{
@@ -117,6 +120,6 @@ export default function Layout() {
         <Stack.Screen name="instance/[iid]" options={{ title: 'Sessions' }} />
         <Stack.Screen name="session/[iid]/[sid]" options={{ title: 'Session' }} />
       </Stack>
-    </>
+    </GestureHandlerRootView>
   )
 }

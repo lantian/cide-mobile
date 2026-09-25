@@ -107,8 +107,27 @@ export function afterChange(seen: string, next: string): Changed {
   return { keys, paste, seen: next.length < PAD.length ? PAD : next }
 }
 
+/** One button on the bar. */
+export interface BarKey {
+  readonly label: string
+  readonly key: KeyEvent
+  /**
+   * A **page of the view**, not a keystroke: up (`-1`) or down (`1`).
+   *
+   * PgUp/PgDn used to be `ESC[5~`/`ESC[6~` sent to the program, which a shell's readline ignores
+   * and which scrolled neither the desk's terminal nor the phone — the "sometimes it works" was
+   * a full-screen program that happened to handle the key. Now they scroll what is being looked
+   * at, on both ends: see `scrollView` in cide's `remote.rs`.
+   */
+  readonly page?: 1 | -1
+}
+
 /** What the key bar offers, in the order it draws them. */
-export const KEY_BAR: readonly { label: string; key: KeyEvent }[] = [
+export const KEY_BAR: readonly BarKey[] = [
+  // First, because on a phone they are the ones reached for most: reading back is most of what
+  // anybody does with a console they did not start.
+  { label: 'pgup', key: { key: { k: 'pageUp' } }, page: -1 },
+  { label: 'pgdn', key: { key: { k: 'pageDown' } }, page: 1 },
   { label: 'esc', key: { key: { k: 'escape' } } },
   { label: 'tab', key: { key: { k: 'tab' } } },
   /*
@@ -131,8 +150,6 @@ export const KEY_BAR: readonly { label: string; key: KeyEvent }[] = [
   { label: '→', key: { key: { k: 'right' } } },
   { label: 'home', key: { key: { k: 'home' } } },
   { label: 'end', key: { key: { k: 'end' } } },
-  { label: 'pgup', key: { key: { k: 'pageUp' } } },
-  { label: 'pgdn', key: { key: { k: 'pageDown' } } },
 ]
 
 /**
@@ -141,7 +158,7 @@ export const KEY_BAR: readonly { label: string; key: KeyEvent }[] = [
  * Ctrl-C above all: it is the most important key in a terminal and the one a sticky-modifier
  * dance is most likely to get wrong under pressure.
  */
-export const CTRL_BAR: readonly { label: string; key: KeyEvent }[] = (
+export const CTRL_BAR: readonly BarKey[] = (
   ['c', 'd', 'z', 'l', 'r', 'a', 'e', 'k', 'u', 'w'] as const
 ).map((letter) => ({
   label: `^${letter.toUpperCase()}`,

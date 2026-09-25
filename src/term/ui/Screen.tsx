@@ -44,6 +44,7 @@ import {
   FOLLOWING,
   grabbed,
   moved,
+  paged,
   remainingOf,
   settled,
   wheelAtEdge,
@@ -239,6 +240,13 @@ export interface ScreenViewProps {
    * but there is no reason to ask for one that will be refused.
    */
   onWheel?: (lines: number) => void
+  /**
+   * Scroll the phone's own view a page, up (`-1`) or down (`1`). A new object is a new press —
+   * the identity is the signal, so two presses the same way are two pages.
+   */
+  page?: { readonly dir: 1 | -1 } | null
+  /** What to say before the first frame: the connection's state, so a wait says what it is. */
+  pending?: string
 }
 
 export function ScreenView({
@@ -249,6 +257,8 @@ export function ScreenView({
   above,
   onNearTop,
   onWheel,
+  page,
+  pending,
 }: ScreenViewProps) {
   // The geometry, and only the geometry, re-renders this component.
   const info = useSyncExternalStore(
@@ -268,6 +278,23 @@ export function ScreenView({
   /** When the last wheel went out, so a held finger is steady motion and not a flood. */
   const wheeledAt = useRef(0)
   const scroller = useRef<ScrollView>(null)
+  /** Where the view is, as the last scroll or layout said. What a page is measured from. */
+  const metrics = useRef({ offsetY: 0, viewport: 0, content: 0 })
+
+  useEffect(() => {
+    if (page === null || page === undefined) return
+    // Following means *at the end*, whatever the last scroll event said: `scrollToEnd` after a
+    // repaint does not reliably report where it went, and a page measured from a stale offset
+    // jumps from somewhere the reader never was.
+    const at = metrics.current
+    const offsetY = follow.current.stuck ? Math.max(0, at.content - at.viewport) : at.offsetY
+    const next = paged({ ...at, offsetY, dir: page.dir })
+    follow.current = next.follow
+    scroller.current?.scrollTo({ y: next.y, animated: true })
+    // A page up that reached the top is also a request for more of what is above it.
+    if (page.dir < 0 && next.y < metrics.current.viewport * 2) onNearTop?.()
+    // `onNearTop` is a fresh closure on every render; the press is the only trigger.
+  }, [page])
 
   /*
    * The keyboard coming up is a resize, and a resize is not a scroll. (M76)
@@ -299,7 +326,7 @@ export function ScreenView({
   if (info === null) {
     return (
       <View style={{ padding: 16 }}>
-        <Text style={{ color: '#8b949e' }}>Waiting for the first frame…</Text>
+        <Text style={{ color: '#8b949e' }}>{pending ?? 'Waiting for the first frame…'}</Text>
       </View>
     )
   }
@@ -366,7 +393,12 @@ export function ScreenView({
       onScroll={(event) => {
         const remaining = remainingOf(event.nativeEvent)
         follow.current = moved(follow.current, remaining)
-        const { contentOffset, layoutMeasurement } = event.nativeEvent
+        const { contentOffset, layoutMeasurement, contentSize } = event.nativeEvent
+        metrics.current = {
+          offsetY: contentOffset.y,
+          viewport: layoutMeasurement.height,
+          content: contentSize.height,
+        }
         // Two screens of warning, so the page has arrived by the time the reader gets there.
         if (contentOffset.y < layoutMeasurement.height * 2) onNearTop?.()
         // And, for a screen the program owns, pulling past an edge asks *it* to scroll.
@@ -394,14 +426,16 @@ export function ScreenView({
       onMomentumScrollEnd={(event) => {
         follow.current = settled(remainingOf(event.nativeEvent))
       }}
-      onContentSizeChange={() => {
+      onContentSizeChange={(_, height) => {
+        metrics.current = { ...metrics.current, content: height }
         if (follow.current.stuck) scroller.current?.scrollToEnd({ animated: false })
       }}
       // Opening a console lands at the end, whatever the content did on the way there. The
       // size change above is what normally does it; this is the one that covers a first layout
       // where the content is already its final height, which is every console with no scrollback
       // to fetch — there is no *change* to react to, so nothing would have scrolled at all.
-      onLayout={() => {
+      onLayout={(event) => {
+        metrics.current = { ...metrics.current, viewport: event.nativeEvent.layout.height }
         if (follow.current.stuck) scroller.current?.scrollToEnd({ animated: false })
       }}
     >

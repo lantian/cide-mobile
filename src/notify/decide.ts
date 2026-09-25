@@ -40,13 +40,35 @@ export interface Ended {
   readonly endedUnixMs: number
 }
 
+/**
+ * What a notification calls one session: the console, and the project it belongs to.
+ *
+ * Both, always. A machine runs several projects at once and every Claude console on it calls
+ * itself `claude`, so a notification that named only the console — or, before the session list
+ * had arrived, only "a session" — told somebody *that* something was waiting and never *what*,
+ * which is the one thing a notification is for.
+ */
+export interface SessionLabel {
+  readonly console: string
+  /** Absent while the project list is still arriving; the title then carries the machine alone. */
+  readonly project: string | null
+}
+
+/** `thinkpad · cide`, or the machine alone when the project is not known. */
+export function titleOf(instanceLabel: string, label: SessionLabel): string {
+  return label.project === null ? instanceLabel : `${instanceLabel} · ${label.project}`
+}
+
 export interface DecideInput {
   readonly instanceId: string
   readonly instanceLabel: string
   /** cide's authoritative set, whole. */
   readonly awaiting: readonly AwaitingEntry[]
-  /** What each session should be called in a notification. */
-  readonly labels: Readonly<Record<string, string>>
+  /**
+   * What each session should be called in a notification — only the sessions this device can
+   * list. A wait on a session missing here is **held back**, not announced with a placeholder.
+   */
+  readonly labels: Readonly<Record<string, SessionLabel>>
   readonly ended: readonly Ended[]
   readonly ledger: Ledger
   /** The session on screen right now, if the app is in the foreground looking at one. */
@@ -84,6 +106,11 @@ export function idFor(instanceId: string, session: SessionId, since: number): st
   return `sess:${instanceId}:${session}:${since}`
 }
 
+/** The one notification a collapsed burst becomes. */
+export function summaryId(instanceId: string): string {
+  return `sess:${instanceId}:summary`
+}
+
 export function decide(input: DecideInput): Decision {
   const ledger: Record<string, LedgerEntry> = { ...input.ledger }
   const raise: Raise[] = []
@@ -95,6 +122,16 @@ export function decide(input: DecideInput): Decision {
     const key = String(entry.session)
     const since = Number(entry.sinceUnixMs)
     const known = ledger[key]
+
+    // **Not yet: nothing to call it, and nothing to open.** The set can name a session the list
+    // does not — the `awaiting` frame of a reconnect lands before `sessions`, and a closed tab
+    // parks a child that can go on waiting with no pane anywhere. Announcing either produced
+    // "thinkpad — a session: Waiting for you", whose tap opened a console with no row behind it.
+    // No ledger write, so the moment the list names it the next tick announces it properly; a
+    // parked child that never gets a pane is never announced, which is what the badge on the
+    // machine list already does (`waitingByProject`).
+    const label = input.labels[key]
+    if (label === undefined) continue
 
     // Already told them about *this* wait. Not about this session — about this wait, which is
     // what lets a second one through.
@@ -110,12 +147,11 @@ export function decide(input: DecideInput): Decision {
       continue
     }
 
-    const label = input.labels[key] ?? 'a session'
     raise.push({
       id: idFor(input.instanceId, entry.session, since),
       channel: 'awaiting',
-      title: `${input.instanceLabel} — ${label}`,
-      body: 'Waiting for you.',
+      title: titleOf(input.instanceLabel, label),
+      body: `${label.console} is waiting for you.`,
       data: { instanceId: input.instanceId, session: entry.session },
     })
   }
@@ -129,11 +165,12 @@ export function decide(input: DecideInput): Decision {
       ledger[key] = { announced: ended.endedUnixMs, acked: true }
       continue
     }
+    const label = input.labels[key] ?? { console: ended.label, project: null }
     raise.push({
       id: idFor(input.instanceId, ended.session, ended.endedUnixMs),
       channel: 'finished',
-      title: `${input.instanceLabel} — ${ended.label}`,
-      body: 'Finished.',
+      title: titleOf(input.instanceLabel, label),
+      body: `${label.console} finished.`,
       data: { instanceId: input.instanceId, session: ended.session },
     })
   }
@@ -146,14 +183,30 @@ export function decide(input: DecideInput): Decision {
     dismiss.push(idFor(input.instanceId, key as SessionId, entry.announced))
   }
 
+  // **And the summary, once nothing it spoke about is still unread.** It names no session of
+  // its own — its payload carries the first one's, for the tap — so neither the per-session
+  // dismissals above nor `dismissFor` on opening a console could ever reach it: a burst of five
+  // left `5 sessions are waiting for you` in the tray after all five had been read, and opening
+  // any one of them from the tray did nothing to it. That was the reported "wrong count" and
+  // "opening it doesn't clear the notification".
+  const unread = input.awaiting.some((entry) => ledger[String(entry.session)]?.acked !== true)
+  if (!unread && raise.length === 0) dismiss.push(summaryId(input.instanceId))
+
   if (raise.length > COLLAPSE_AT) {
     // A burst is the *ordinary* outcome of opening the app after a day away, so it collapses
     // rather than filling the shade with one row per session.
     const summary: Raise = {
-      id: `sess:${input.instanceId}:summary`,
+      id: summaryId(input.instanceId),
       channel: 'awaiting',
       title: input.instanceLabel,
-      body: `${raise.length} sessions are waiting for you.`,
+      // Named, not just counted: "5 sessions" sends somebody into the app to find out which.
+      body: `${raise.length} waiting: ${raise
+        .map((r) => {
+          const label = input.labels[String(r.data.session)]
+          return label === undefined ? '' : label.project === null ? label.console : `${label.project}/${label.console}`
+        })
+        .filter((name) => name !== '')
+        .join(', ')}`,
       data: { instanceId: input.instanceId, session: raise[0]!.data.session },
     }
     return { raise: [summary], dismiss, ledger }

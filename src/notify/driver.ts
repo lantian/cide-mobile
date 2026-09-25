@@ -13,7 +13,7 @@
  */
 import { AppState } from 'react-native'
 import * as registry from '../store/registry'
-import { acknowledge, decide, type Ledger } from './decide'
+import { acknowledge, decide, type Ledger, type SessionLabel } from './decide'
 import { apply, dismissFor, prepare } from './notifier'
 
 let ledger: Ledger = {}
@@ -64,9 +64,12 @@ async function tick(): Promise<void> {
   if (!allowed) return
   const state = AppState.currentState === 'active' ? 'active' : 'background'
   for (const view of registry.getSnapshot()) {
-    const labels: Record<string, string> = {}
+    const labels: Record<string, SessionLabel> = {}
     for (const session of view.sessions) {
-      labels[String(session.session)] = session.tabTitle ?? session.title
+      labels[String(session.session)] = {
+        console: session.tabTitle ?? session.title,
+        project: view.projects.find((p) => p.id === session.project)?.name ?? null,
+      }
     }
     const decision = decide({
       instanceId: view.paired.instanceId,

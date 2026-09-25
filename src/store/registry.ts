@@ -13,6 +13,7 @@ import { Connection, wsDial, type Paired, type Phase } from '../net/connection'
 import type {
   AgentRun,
   AwaitingEntry,
+  MilestonesView,
   PermissionPrompt,
   RemoteAgent,
   TaskRow,
@@ -75,6 +76,12 @@ export interface InstanceView {
    */
   readonly dispatching: Readonly<Record<string, boolean>>
   readonly tasks: Readonly<Record<string, readonly TaskRow[]>>
+  /**
+   * Each subscribed project's milestones, gates and their state. (M91) `null` is a project with
+   * none — said by cide, so a project that has none and one not heard from yet can differ.
+   * Pushed with the other per-project reads, and again whenever a gate starts or finishes.
+   */
+  readonly milestones: Readonly<Record<string, MilestonesView | null>>
 }
 
 interface Entry {
@@ -87,6 +94,27 @@ interface Entry {
 
 const entries = new Map<string, Entry>()
 const listeners = new Set<() => void>()
+/**
+ * Whoever wants to hear cide say no, per instance.
+ *
+ * `input`, `paste` and `scroll` are told, not requested, and cide answers only a refusal — a
+ * permission question on screen, a program not asking for the mouse, a session that ended.
+ * Those arrived here, fell through `default:` and were never seen: a key that did nothing, on a
+ * screen that could not say why. The console screen listens and shows the sentence.
+ */
+const refusals = new Map<string, Set<(detail: string) => void>>()
+
+export function onRefusal(instanceId: string, listener: (detail: string) => void): () => void {
+  let set = refusals.get(instanceId)
+  if (set === undefined) {
+    set = new Set()
+    refusals.set(instanceId, set)
+  }
+  set.add(listener)
+  return () => {
+    set.delete(listener)
+  }
+}
 let snapshot: InstanceView[] = []
 
 function announce(): void {
@@ -175,6 +203,7 @@ export function open(paired: Paired): void {
       roster: {},
       dispatching: {},
       tasks: {},
+      milestones: {},
     },
     screens: new Map(),
     histories: new Map(),
@@ -251,6 +280,12 @@ function receive(instanceId: string, body: ServerBody): void {
         tasks: { ...entry.view.tasks, [String(body.project)]: body.tasks },
       }
       break
+    case 'milestones':
+      entry.view = {
+        ...entry.view,
+        milestones: { ...entry.view.milestones, [String(body.project)]: body.view ?? null },
+      }
+      break
     case 'sessionState': {
       // Patched in place rather than re-fetched: a transition arrives several times a second
       // during a turn, and asking for the whole list each time would be the 2.25 MB task board's
@@ -298,6 +333,9 @@ function receive(instanceId: string, body: ServerBody): void {
       // Its own subscribers, for `screen`'s reason: a page is not a list change.
       return
     }
+    case 'error':
+      for (const listener of refusals.get(instanceId) ?? []) listener(body.detail)
+      return
     case 'desync':
       // Whatever was missed, the cure is the same: ask again for everything subscribed.
       entry.connection.tell({ t: 'subscribe', projects: entry.view.projects.map((p) => p.id) })

@@ -120,6 +120,56 @@ describe('Connection', () => {
     expect(subscribes[0]!.body).toMatchObject({ projects: ['p-1', 'p-2'] })
   })
 
+  it('watches a console opened before the socket was up, and again after a reconnect', () => {
+    // A notification's tap: the console screen mounts while the socket is still connecting.
+    // `tell` drops everything before `ready`, so this used to go nowhere and the console sat on
+    // "Waiting for the first frame…" for ever.
+    h.connection.start()
+    h.connection.watch('s-1')
+    h.connection.acknowledge('s-1')
+    const first = h.sockets[h.sockets.length - 1]!
+    first.open()
+    first.say(welcome(), 1)
+    const said = first.heard().map((f) => f.body)
+    expect(said).toContainEqual({ t: 'watchScreen', session: 's-1' })
+    expect(said).toContainEqual({ t: 'acknowledge', session: 's-1' })
+
+    first.drop()
+    h.clock.advance(RUNGS[0]!)
+    const second = h.sockets[h.sockets.length - 1]!
+    second.open()
+    second.say(welcome(), 1)
+    const again = second.heard().map((f) => f.body)
+    expect(again).toContainEqual({ t: 'watchScreen', session: 's-1' })
+    // The look was said once; a reconnect does not re-acknowledge a later wait nobody saw.
+    expect(again.filter((b) => b.t === 'acknowledge')).toHaveLength(0)
+
+    // And a console that was left is not re-watched.
+    h.connection.unwatch('s-1')
+    second.drop()
+    h.clock.advance(RUNGS[0]!)
+    const third = h.sockets[h.sockets.length - 1]!
+    third.open()
+    third.say(welcome(), 1)
+    expect(third.heard().filter((f) => f.body.t === 'watchScreen')).toHaveLength(0)
+  })
+
+  it('numbers input per socket, not per screen', () => {
+    // cide drops a write whose number is not above the last it applied on this socket, so a
+    // counter that restarted when a console was reopened lost every key until it caught up.
+    ready(h)
+    expect([h.connection.nextSeq(), h.connection.nextSeq()]).toEqual([1, 2])
+    // A second screen on the same socket carries on from there.
+    expect(h.connection.nextSeq()).toBe(3)
+  })
+
+  it('knows what the cide on the other end offers', () => {
+    expect(h.connection.has('sessions')).toBe(false)
+    ready(h)
+    expect(h.connection.has('sessions')).toBe(true)
+    expect(h.connection.has('scrollView')).toBe(false)
+  })
+
   it('backs off along the ladder and resets only on a completed handshake', () => {
     h.connection.start()
     // A server that accepts and immediately drops: the socket opens every time. Resetting there

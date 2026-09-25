@@ -29,6 +29,7 @@ import {
   taskRows,
   waitingByProject,
   waitingIn,
+  shownState,
 } from '../src/agents/model'
 import type {
   AgentRun,
@@ -291,7 +292,7 @@ describe('the board', () => {
   it('counts every state, including the ones with nothing in them', () => {
     // A zero has to be present, not absent: the section row renders "3 doing, 0 review" and an
     // absent key would render `undefined`.
-    expect(taskCounts([task('a', 'doing', 1)])).toEqual({ todo: 0, doing: 1, review: 0, done: 0 })
+    expect(taskCounts([task('a', 'doing', 1)])).toEqual({ inbox: 0, todo: 0, doing: 1, review: 0, done: 0 })
   })
 })
 
@@ -444,5 +445,22 @@ describe('what a machine is doing', () => {
   it('says one of each in the singular', () => {
     const one = { claudeWorking: 1, agentsRunning: 1, openTasks: 1, consoles: 1 }
     expect(machineSummary(one)).toBe('1 Claude running · 1 agent running · 1 open task')
+  })
+})
+
+describe('shownState', () => {
+  // The reported bug: the notification cleared and the row still said "waiting for you".
+  it('says a finished turn somebody has looked at is idle', () => {
+    expect(shownState('awaitingInput', false)).toBe('idle')
+  })
+
+  it('keeps waiting while it is still in the set', () => {
+    expect(shownState('awaitingInput', true)).toBe('awaitingInput')
+  })
+
+  it('leaves every other state alone', () => {
+    for (const state of ['busy', 'awaitingPermission', 'exited', 'spawning']) {
+      expect(shownState(state, false)).toBe(state)
+    }
   })
 })

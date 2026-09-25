@@ -63,3 +63,25 @@ describe('reading a per-project map', () => {
     expect(choice.forProject(byProject, 'p9')).toEqual([])
   })
 })
+
+describe('swiping between projects', () => {
+  it('steps through the chips in their order, All first', () => {
+    expect(choice.nextChoice(open, null, 1)).toBe('p1')
+    expect(choice.nextChoice(open, 'p1', 1)).toBe('p2')
+    expect(choice.nextChoice(open, 'p2', -1)).toBe('p1')
+    expect(choice.nextChoice(open, 'p1', -1)).toBeNull()
+  })
+
+  it('stops at either end rather than wrapping', () => {
+    expect(choice.nextChoice(open, null, -1)).toBeUndefined()
+    expect(choice.nextChoice(open, 'p2', 1)).toBeUndefined()
+  })
+
+  it('does nothing where there are no chips', () => {
+    expect(choice.nextChoice([{ id: 'p1' }], null, 1)).toBeUndefined()
+  })
+
+  it('treats a choice that is gone as All', () => {
+    expect(choice.nextChoice(open, 'closed', 1)).toBe('p1')
+  })
+})

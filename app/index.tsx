@@ -14,7 +14,7 @@ import * as choice from '../src/store/projectChoice'
 import * as notify from '../src/notify/driver'
 import { T } from '../src/ui/theme'
 import { Badge } from '../src/ui/Badge'
-import { machineCounts, machineSummary } from '../src/agents/model'
+import { machineCounts, machineSummary, waitingByProject, waitingIn } from '../src/agents/model'
 
 /**
  * Forget a paired instance, after asking.
@@ -103,7 +103,11 @@ export default function Instances() {
       ) : null}
 
       {views.map((view) => {
-        const waiting = view.awaiting.length
+        // Only waits for a console this device can list — the count the Consoles row on the
+        // next screen shows, over every project. cide's set also holds sessions no pane shows
+        // (a closed tab parks its child, and a parked child can go on waiting), and counting
+        // those here made this badge promise something the screen behind it had nowhere to show.
+        const waiting = waitingIn(waitingByProject(view.sessions, view.awaiting), null)
         const counts = machineCounts(view)
         return (
           <Pressable

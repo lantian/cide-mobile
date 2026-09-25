@@ -10,7 +10,11 @@
  * "you could be choosing something here" while offering no choice, and the screens behind it
  * read identically with and without it.
  */
-import { Pressable, ScrollView, Text } from 'react-native'
+import { useEffect, useRef } from 'react'
+import { Pressable, Text } from 'react-native'
+// Gesture-handler's scroller, not React Native's: it is a native gesture `ProjectSwipe` can see,
+// so dragging a long row of chips scrolls the row instead of changing project. (M91)
+import { ScrollView } from 'react-native-gesture-handler'
 import type { RemoteProject } from '../protocol/generated'
 import { T } from './theme'
 import { Dot } from './Badge'
@@ -28,16 +32,28 @@ export function ProjectPicker({
   waiting?: Readonly<Record<string, number>>
   onChoose: (project: string | null) => void
 }) {
+  // The chosen chip is brought into view — a swipe can land on one scrolled off the edge, and a
+  // choice nobody can see made reads as the swipe having done nothing.
+  const row = useRef<ScrollView>(null)
+  const offsets = useRef(new Map<string, number>())
+  const key = chosen ?? ''
+  useEffect(() => {
+    const x = offsets.current.get(key)
+    if (x !== undefined) row.current?.scrollTo({ x: Math.max(0, x - 24), animated: true })
+  }, [key])
+
   if (projects.length < 2) return null
 
   return (
     <ScrollView
+      ref={row}
       horizontal
       showsHorizontalScrollIndicator={false}
       contentContainerStyle={{ gap: 8, paddingVertical: 2 }}
     >
       <Chip
         label="All"
+        onX={(x) => offsets.current.set('', x)}
         active={chosen === null}
         marked={Object.values(waiting ?? {}).some((n) => n > 0)}
         onPress={() => onChoose(null)}
@@ -46,6 +62,7 @@ export function ProjectPicker({
         <Chip
           key={String(project.id)}
           label={project.name}
+          onX={(x) => offsets.current.set(String(project.id), x)}
           active={chosen === String(project.id)}
           marked={(waiting?.[String(project.id)] ?? 0) > 0}
           onPress={() => onChoose(String(project.id))}
@@ -60,15 +77,19 @@ function Chip({
   active,
   marked,
   onPress,
+  onX,
 }: {
   label: string
   active: boolean
   marked: boolean
   onPress: () => void
+  /** Where the chip sits in the row, for bringing the chosen one into view. */
+  onX: (x: number) => void
 }) {
   return (
     <Pressable
       onPress={onPress}
+      onLayout={(event) => onX(event.nativeEvent.layout.x)}
       style={{
         flexDirection: 'row',
         alignItems: 'center',

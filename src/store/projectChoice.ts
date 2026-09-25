@@ -80,3 +80,25 @@ export function forProject<T>(
   if (project !== null) return [...(byProject[project] ?? [])]
   return Object.values(byProject).flat()
 }
+
+/**
+ * The choice one swipe lands on. (M91)
+ *
+ * The chips' own order — *All*, then each project as the machine lists them — so a swipe moves
+ * to the chip beside the lit one and never somewhere the row does not show. A swipe to the
+ * **left** (`1`) is the next chip, the way a page turns; it stops at either end rather than
+ * wrapping, because a wrap is a jump from the last project to *All* that nobody could see
+ * coming. `null` from a machine with fewer than two projects, which draws no chips at all.
+ */
+export function nextChoice(
+  open: readonly { id: unknown }[],
+  current: Choice,
+  dir: 1 | -1,
+): Choice | undefined {
+  if (open.length < 2) return undefined
+  const order: Choice[] = [null, ...open.map((project) => String(project.id))]
+  const at = Math.max(0, order.indexOf(current))
+  const next = at + dir
+  if (next < 0 || next >= order.length) return undefined
+  return order[next]
+}

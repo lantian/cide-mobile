@@ -14,6 +14,8 @@ import { Stack, useLocalSearchParams, useRouter } from 'expo-router'
 import * as registry from '../../../src/store/registry'
 import * as choice from '../../../src/store/projectChoice'
 import { ProjectPicker } from '../../../src/ui/ProjectPicker'
+import { ProjectSwipe } from '../../../src/ui/ProjectSwipe'
+import { ScrollView as HScroll } from 'react-native-gesture-handler'
 import { filterTasks, matchesQuery, taskCounts } from '../../../src/agents/model'
 import type { TaskFilter } from '../../../src/agents/model'
 import { T } from '../../../src/ui/theme'
@@ -65,116 +67,120 @@ export default function TasksScreen() {
   return (
     <>
       <Stack.Screen options={{ title: 'Tasks' }} />
-      <ScrollView
-        style={{ flex: 1, backgroundColor: T.bg }}
-        contentContainerStyle={{ padding: 16, gap: 10 }}
-      >
-        <ProjectPicker
-          projects={view.projects}
-          chosen={project}
-          onChoose={(next) => choice.choose(iid, next)}
-        />
-
-        <TextInput
-          placeholder="Filter by title or id"
-          placeholderTextColor={T.dim}
-          value={query}
-          onChangeText={setQuery}
-          autoCapitalize="none"
-          autoCorrect={false}
-          style={{
-            color: T.text,
-            borderWidth: 1,
-            borderColor: T.border,
-            borderRadius: 8,
-            paddingHorizontal: 12,
-            paddingVertical: 9,
-            backgroundColor: T.panel,
-            fontSize: 14,
-          }}
-        />
-
+      <ProjectSwipe iid={iid} projects={view.projects} chosen={project}>
         <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={{ gap: 8, paddingVertical: 2 }}
+          style={{ flex: 1, backgroundColor: T.bg }}
+          contentContainerStyle={{ padding: 16, gap: 10 }}
         >
-          {/* Counts on the chips, so an empty state is visible *before* it is chosen — a filter
-              that silently leads to nothing is a filter people press twice. */}
-          <FilterChip label={`All ${tasks.length}`} active={filter === null} onPress={() => setFilter(null)} />
-          {(['doing', 'review', 'todo', 'done'] as const).map((status) => (
-            <FilterChip
-              key={status}
-              label={`${status} ${counts[status]}`}
-              active={filter === status}
-              onPress={() => setFilter(filter === status ? null : status)}
-            />
-          ))}
-        </ScrollView>
+          <ProjectPicker
+            projects={view.projects}
+            chosen={project}
+            onChoose={(next) => choice.choose(iid, next)}
+          />
 
-        {rows.length === 0 ? (
-          <Text style={{ color: T.dim, lineHeight: 21 }}>
-            {/* Three different sentences, because "this project has no tracker", "the board is
-                empty" and "your filter matches nothing" have three different next actions. */}
-            {tasks.length === 0 ? (
-              <>
-                No tasks. A project's tracker lives in its{' '}
-                <Text style={{ color: T.text }}>.cide/</Text> directory.
-              </>
-            ) : (
-              'Nothing matches that.'
-            )}
-          </Text>
-        ) : (
-          <>
-            <Text style={{ color: T.dim, fontSize: 13 }}>
-              {`${counts.doing} in progress · ${counts.review} in review · ${counts.todo} to do · ${counts.done} done`}
-            </Text>
-            {rows.map((task) => (
-              <Pressable
-                key={String(task.id)}
-                onPress={() => router.push(`/task/${iid}/${String(task.id)}`)}
-                style={{
-                  padding: 14,
-                  borderRadius: 10,
-                  borderWidth: 1,
-                  borderColor: T.border,
-                  backgroundColor: T.panel,
-                  gap: 6,
-                }}
-              >
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                  <View
-                    style={{
-                      width: 8,
-                      height: 8,
-                      borderRadius: 4,
-                      backgroundColor: statusColour(task.status),
-                    }}
-                  />
-                  <Text style={{ color: T.text, fontSize: 15, flex: 1 }} numberOfLines={2}>
-                    {task.title}
-                  </Text>
-                </View>
-                <Text style={{ color: T.dim, fontSize: 12 }} numberOfLines={1}>
-                  {[
-                    task.status,
-                    // The role's current label, because a board row names a role by id and an
-                    // id is not a name. Falls back to the id when the role is gone — which is a
-                    // real state, and blanking it would hide that the task is assigned at all.
-                    task.agent === undefined || task.agent === null
-                      ? undefined
-                      : (agents.get(String(task.agent)) ?? String(task.agent)),
-                    String(task.id),
-                  ]
-                    .filter((part) => part !== undefined && part !== '')
-                    .join(' · ')}
-                </Text>
-              </Pressable>
+          <TextInput
+            placeholder="Filter by title or id"
+            placeholderTextColor={T.dim}
+            value={query}
+            onChangeText={setQuery}
+            autoCapitalize="none"
+            autoCorrect={false}
+            style={{
+              color: T.text,
+              borderWidth: 1,
+              borderColor: T.border,
+              borderRadius: 8,
+              paddingHorizontal: 12,
+              paddingVertical: 9,
+              backgroundColor: T.panel,
+              fontSize: 14,
+            }}
+          />
+
+          {/* Gesture-handler's scroller, so dragging this row scrolls it rather than being taken
+              for a swipe to the next project by `ProjectSwipe` around the screen. */}
+          <HScroll
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{ gap: 8, paddingVertical: 2 }}
+          >
+            {/* Counts on the chips, so an empty state is visible *before* it is chosen — a filter
+                that silently leads to nothing is a filter people press twice. */}
+            <FilterChip label={`All ${tasks.length}`} active={filter === null} onPress={() => setFilter(null)} />
+            {(['doing', 'review', 'todo', 'inbox', 'done'] as const).map((status) => (
+              <FilterChip
+                key={status}
+                label={`${status} ${counts[status]}`}
+                active={filter === status}
+                onPress={() => setFilter(filter === status ? null : status)}
+              />
             ))}
-          </>
-        )}
-      </ScrollView>
+          </HScroll>
+
+          {rows.length === 0 ? (
+            <Text style={{ color: T.dim, lineHeight: 21 }}>
+              {/* Three different sentences, because "this project has no tracker", "the board is
+                  empty" and "your filter matches nothing" have three different next actions. */}
+              {tasks.length === 0 ? (
+                <>
+                  No tasks. A project's tracker lives in its{' '}
+                  <Text style={{ color: T.text }}>.cide/</Text> directory.
+                </>
+              ) : (
+                'Nothing matches that.'
+              )}
+            </Text>
+          ) : (
+            <>
+              <Text style={{ color: T.dim, fontSize: 13 }}>
+                {`${counts.doing} in progress · ${counts.review} in review · ${counts.todo} to do · ${counts.done} done`}
+              </Text>
+              {rows.map((task) => (
+                <Pressable
+                  key={String(task.id)}
+                  onPress={() => router.push(`/task/${iid}/${String(task.id)}`)}
+                  style={{
+                    padding: 14,
+                    borderRadius: 10,
+                    borderWidth: 1,
+                    borderColor: T.border,
+                    backgroundColor: T.panel,
+                    gap: 6,
+                  }}
+                >
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <View
+                      style={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: 4,
+                        backgroundColor: statusColour(task.status),
+                      }}
+                    />
+                    <Text style={{ color: T.text, fontSize: 15, flex: 1 }} numberOfLines={2}>
+                      {task.title}
+                    </Text>
+                  </View>
+                  <Text style={{ color: T.dim, fontSize: 12 }} numberOfLines={1}>
+                    {[
+                      task.status,
+                      // The role's current label, because a board row names a role by id and an
+                      // id is not a name. Falls back to the id when the role is gone — which is a
+                      // real state, and blanking it would hide that the task is assigned at all.
+                      task.agent === undefined || task.agent === null
+                        ? undefined
+                        : (agents.get(String(task.agent)) ?? String(task.agent)),
+                      String(task.id),
+                    ]
+                      .filter((part) => part !== undefined && part !== '')
+                      .join(' · ')}
+                  </Text>
+                </Pressable>
+              ))}
+            </>
+          )}
+        </ScrollView>
+      </ProjectSwipe>
     </>
   )
 }

@@ -145,6 +145,32 @@ export class Connection {
     { resolve: (body: ServerBody) => void; reject: (error: Error) => void; timer: unknown }
   >()
   private interests: Interests = { projects: [] }
+  /**
+   * The consoles a screen is showing, re-watched after every handshake.
+   *
+   * An interest like the projects, for the header's reason, and it has to be: `tell` drops what
+   * it is handed before `ready`. A notification's tap routes **first** and connects behind it,
+   * so the console screen mounted, said `watchScreen` into a socket still handshaking, and the
+   * saying went nowhere — nothing re-sent it, the effect's only dependency being this very
+   * object, and the console sat on "Waiting for the first frame…" for ever. Every reconnect
+   * while a console was open did the same thing more quietly.
+   */
+  private readonly watched = new Set<string>()
+  /** Consoles opened while the socket was down, whose `acknowledge` is owed on the next `ready`. */
+  private readonly looked = new Set<string>()
+  /**
+   * The input counter, **per socket**, shared by every screen that writes.
+   *
+   * cide drops a write whose `seq` is not above the last one it applied from this device on this
+   * socket (`accept_write`, keyed by device, epoch'd by connection). It was a `useRef(1)` in the
+   * console screen, so leaving a console and opening it again on the same socket restarted the
+   * count under a watermark in the dozens, and every key — PgUp most visibly, being the one
+   * nobody types around — was discarded, answered `ok`, until the new count overtook the old.
+   * Reset on `welcome`, when the epoch changes with it.
+   */
+  private seq = 1
+  /** What the cide on the other end said it can do, in its `welcome`. Empty until then. */
+  private features: ReadonlySet<string> = new Set()
   private timers: unknown[] = []
   private stopped = false
   /** The host that answered last, tried first next time. */
@@ -214,6 +240,33 @@ export class Connection {
       this.pending.set(id, { resolve, reject, timer })
       this.send({ id, body })
     })
+  }
+
+  /** Whether the cide on the other end offers `feature` — for a frame an older one would refuse. */
+  has(feature: string): boolean {
+    return this.features.has(feature)
+  }
+
+  /** The next input number. See `seq`. */
+  nextSeq(): number {
+    return this.seq++
+  }
+
+  /** Show this console's screen, now or as soon as the socket is up — and after every reconnect. */
+  watch(session: string): void {
+    this.watched.add(session)
+    this.tell({ t: 'watchScreen', session: session as never })
+  }
+
+  unwatch(session: string): void {
+    this.watched.delete(session)
+    this.tell({ t: 'unwatchScreen', session: session as never })
+  }
+
+  /** This console has been looked at. Kept until it can be said, rather than dropped. */
+  acknowledge(session: string): void {
+    if (this.phase === 'ready') this.tell({ t: 'acknowledge', session: session as never })
+    else this.looked.add(session)
   }
 
   /** Say something that expects no answer. */
@@ -348,9 +401,14 @@ export class Connection {
         return
       }
       this.back.succeed()
+      this.features = new Set(frame.body.features)
       this.enter('ready')
       // Declared, not commanded: the whole set, every time. See the header.
       this.send({ body: { t: 'subscribe', projects: [...this.interests.projects] } })
+      this.seq = 1
+      for (const session of this.looked) this.send({ body: { t: 'acknowledge', session: session as never } })
+      this.looked.clear()
+      for (const session of this.watched) this.send({ body: { t: 'watchScreen', session: session as never } })
       this.beat()
     }
 

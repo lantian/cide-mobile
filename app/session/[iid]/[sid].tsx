@@ -12,6 +12,7 @@
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import {
+  AppState,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -27,7 +28,7 @@ import * as notify from '../../../src/notify/driver'
 import { ScreenView } from '../../../src/term/ui/Screen'
 import { HistoryView } from '../../../src/term/ui/History'
 import { PAGE } from '../../../src/term/history'
-import { CTRL_BAR, KEY_BAR, PAD, afterChange } from '../../../src/term/keys'
+import { CTRL_BAR, KEY_BAR, PAD, afterChange, type BarKey } from '../../../src/term/keys'
 import { T } from '../../../src/ui/theme'
 import { KindTile, look } from '../../../src/ui/Kind'
 import type { KeyEvent, PermissionPrompt, SessionId } from '../../../src/protocol/generated'
@@ -58,13 +59,14 @@ export default function SessionScreen() {
   const [fontSize, setFontSize] = useState<number>(11)
   const [wrapped, setWrapped] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  /** The last PgUp/PgDn of this device's own view; a new object per press. See `ScreenView`. */
+  const [page, setPage] = useState<{ readonly dir: 1 | -1 } | null>(null)
   const input = useRef<TextInput>(null)
   /** What the field was last *seen* holding — never what it was asked to hold. `afterChange`. */
   const seen = useRef(PAD)
   // The field is **controlled**. It has to be: the only reliable way to put a value back into a
   // `TextInput` under the New Architecture is to render it, and this app runs bridgeless.
   const [pad, setPad] = useState(PAD)
-  const seq = useRef(1)
 
   const screen = registry.screenOf(iid, sid)
   const history = registry.historyOf(iid, sid)
@@ -120,28 +122,65 @@ export default function SessionScreen() {
    */
   const projectName = view?.projects.find((p) => p.id === row?.project)?.name ?? null
 
+  // Re-asked whenever the socket comes (back) up: a page asked for while it was down was
+  // dropped, and a console opened from a notification is opened before the socket is.
+  const ready = view?.phase === 'ready'
+  useEffect(() => {
+    if (ready) askPage(0, 0)
+  }, [askPage, ready])
+
+  // cide's refusals of what this screen sent, said where the keys were pressed. Cleared after a
+  // few seconds: it is about a key, not about the console.
+  useEffect(
+    () =>
+      registry.onRefusal(iid, (detail) => {
+        setError(detail)
+        setTimeout(() => setError((now) => (now === detail ? null : now)), 4000)
+      }),
+    [iid],
+  )
+
+  /*
+   * A wait that begins **while** this console is on screen is looked at too.
+   *
+   * The acknowledge used to go out once, on opening. A turn that finished with the console open
+   * put the session back in cide's set, nothing took it out again, and the moment somebody went
+   * back the list said "waiting" about the very output they had just watched arrive — and so did
+   * the desktop. Keyed on the wait's stamp, so it fires once per wait and not per frame.
+   */
+  const since = view?.awaiting.find((entry) => String(entry.session) === sid)?.sinceUnixMs
+  useEffect(() => {
+    if (connection === undefined || since === undefined) return
+    if (AppState.currentState !== 'active') return
+    connection.acknowledge(String(session))
+    registry.acknowledged(iid, String(session))
+  }, [connection, iid, session, since])
+
   useEffect(() => {
     if (connection === undefined) return
-    // Opening it is looking at it. See the header.
-    connection.tell({ t: 'acknowledge', session })
+    // Opening it is looking at it. See the header. Kept by the connection until it can be
+    // said: the socket is often still coming up when a notification's tap lands here.
+    connection.acknowledge(String(session))
     // And locally, at once. cide's set is still authoritative and its next frame replaces this
     // — but a badge that outlives the act of opening the thing it points at reads as a button
     // that did nothing.
     registry.acknowledged(iid, String(session))
-    connection.tell({ t: 'watchScreen', session })
+    // An interest, re-sent after every handshake — never a one-off `tell`. See `Connection.watch`.
+    connection.watch(String(session))
     // And the device's own two records of the same fact: the ledger, so this wait is not
     // announced again after a reconnect, and the tray, which otherwise keeps showing a
     // notification for the console currently filling the screen.
     notify.watching(String(session))
     return () => {
-      connection.tell({ t: 'unwatchScreen', session })
+      connection.unwatch(String(session))
       notify.watching(null)
     }
   }, [connection, iid, session])
 
   const send = useCallback(
     (key: KeyEvent) => {
-      connection?.tell({ t: 'input', session, key, seq: seq.current++ })
+      if (connection === undefined) return
+      connection.tell({ t: 'input', session, key, seq: connection.nextSeq() })
     },
     [connection, session],
   )
@@ -157,10 +196,39 @@ export default function SessionScreen() {
       setPad(changed.seen)
       for (const key of changed.keys) send(key)
       if (changed.paste !== null) {
-        connection?.tell({ t: 'paste', session, text: changed.paste, seq: seq.current++ })
+        if (connection !== undefined) {
+          connection.tell({ t: 'paste', session, text: changed.paste, seq: connection.nextSeq() })
+        }
       }
     },
     [connection, send, session],
+  )
+
+  /**
+   * A button on the bar. PgUp/PgDn page the **view**, on both ends. (M91)
+   *
+   * On the normal screen the history is the terminal's: this device pages its own copy, and
+   * cide pages the desk's pane to match. On an alternate screen the program owns the transcript:
+   * cide sends it a screenful of wheel (or the key, where it asked for no mouse), and both ends
+   * see its redraw — so nothing is scrolled here, where the grid is all there is. An older cide
+   * that does not offer `scrollView` still gets the key, as before.
+   */
+  const press = useCallback(
+    (entry: BarKey) => {
+      if (entry.page === undefined) {
+        send(entry.key)
+        return
+      }
+      const alt = screen.info?.alt ?? false
+      if (!alt) setPage({ dir: entry.page })
+      if (connection === undefined) return
+      if (connection.has('scrollView')) {
+        connection.tell({ t: 'scrollView', session, pages: entry.page, seq: connection.nextSeq() })
+      } else if (alt) {
+        send(entry.key)
+      }
+    },
+    [connection, screen, send, session],
   )
 
   /** Enter, and then an empty line to write the next one on. */
@@ -251,8 +319,11 @@ export default function SessionScreen() {
           // there is nothing to page — the transcript is in the program, and the way a terminal
           // asks a program to show more of it is a wheel. cide refuses one aimed at a child that
           // never enabled mouse reports, which is why this can be offered unconditionally.
+          page={page}
+          pending={pendingText(view?.phase, view?.detail, view?.paired.label)}
           onWheel={(lines) => {
-            connection?.tell({ t: 'scroll', session, lines, seq: seq.current++ })
+            if (connection === undefined) return
+            connection.tell({ t: 'scroll', session, lines, seq: connection.nextSeq() })
           }}
           above={({ fontSize: size, lineHeight, budget }) => (
             <HistoryView
@@ -304,7 +375,7 @@ export default function SessionScreen() {
         {[...KEY_BAR, ...CTRL_BAR].map((entry) => (
           <Pressable
             key={entry.label}
-            onPress={() => send(entry.key)}
+            onPress={() => press(entry)}
             style={{
               paddingHorizontal: 12,
               paddingVertical: 7,
@@ -368,4 +439,27 @@ export default function SessionScreen() {
       )}
     </KeyboardAvoidingView>
   )
+}
+
+/**
+ * What the console says before its first frame: the connection's state, not a promise.
+ *
+ * "Waiting for the first frame…" read the same whether a frame was a moment away or would never
+ * come — a console opened from a notification before the socket was up sat on it for ever, and
+ * nothing on the screen said the machine was not even connected.
+ */
+function pendingText(phase: string | undefined, detail: string | undefined, label: string | undefined): string {
+  const name = label ?? 'cide'
+  switch (phase) {
+    case 'ready':
+      return 'Waiting for the first frame…'
+    case 'connecting':
+    case 'handshaking':
+    case 'idle':
+      return `Connecting to ${name}…`
+    case 'backoff':
+      return detail === undefined ? `Reconnecting to ${name}…` : `Reconnecting to ${name} — ${detail}`
+    default:
+      return detail ?? `Not connected to ${name}.`
+  }
 }

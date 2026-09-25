@@ -192,7 +192,8 @@ export function queueState(dispatching: boolean | undefined): 'open' | 'paused' 
   return dispatching ? 'open' : 'paused'
 }
 
-const TASK_ORDER: Record<TaskStatus, number> = { doing: 0, review: 1, todo: 2, done: 3 }
+// The inbox (cide M83) sits under the backlog and above done: noticed, not planned.
+const TASK_ORDER: Record<TaskStatus, number> = { doing: 0, review: 1, todo: 2, inbox: 3, done: 4 }
 
 /**
  * The board, in the order a person cares about.
@@ -378,7 +379,23 @@ export function matchesQuery(task: TaskRow, query: string): boolean {
 
 /** How many tasks are in each state, for the summary a section row shows. */
 export function taskCounts(tasks: readonly TaskRow[]): Record<TaskStatus, number> {
-  const counts: Record<TaskStatus, number> = { todo: 0, doing: 0, review: 0, done: 0 }
+  const counts: Record<TaskStatus, number> = { inbox: 0, todo: 0, doing: 0, review: 0, done: 0 }
   for (const task of tasks) counts[task.status] += 1
   return counts
+}
+
+/**
+ * The state a console row shows: cide's, except that a finished turn somebody has **looked at**
+ * reads as idle rather than "waiting for you". (M91)
+ *
+ * Two different facts. `awaitingInput` is the hook's: the turn ended, and it stays that way
+ * until the next one begins. *Waiting for you* is the awaiting set's: nobody has looked yet —
+ * and opening the console takes it out of the set, here and on the desk. The row read the
+ * first, so after somebody had opened a console, read it and come back, the dot and the border
+ * were gone and the line underneath still said "waiting for you" in the warning colour: the
+ * notification cleared and the list contradicted it. The desk keeps the two apart for the same
+ * reason (`ui/src/panes/awaitingRule.ts`).
+ */
+export function shownState(state: string, waiting: boolean): string {
+  return state === 'awaitingInput' && !waiting ? 'idle' : state
 }

@@ -122,3 +122,26 @@ export function wheelAtEdge(at: {
   if (at.remaining <= EDGE_WITHIN) return WHEEL_LINES
   return 0
 }
+
+/* --- paging the phone's own view ----------------------------------------------------------- */
+
+/** How much of a viewport one PgUp/PgDn moves: most of it, so a line of context carries over. */
+export const PAGE_FRACTION = 0.9
+
+/**
+ * Where a PgUp (`-1`) or PgDn (`1`) of the phone's own view lands, and what following becomes.
+ *
+ * The reader's act, so it decides following exactly as a drag that ended there would: a PgDn
+ * that reaches the end is back to following the output, and a PgUp is reading and is left alone
+ * by whatever arrives next — which is the only way a page up survives a busy console at all.
+ */
+export function paged(at: {
+  offsetY: number
+  viewport: number
+  content: number
+  dir: 1 | -1
+}): { y: number; follow: Follow } {
+  const max = Math.max(0, at.content - at.viewport)
+  const y = Math.min(max, Math.max(0, at.offsetY + at.dir * at.viewport * PAGE_FRACTION))
+  return { y, follow: settled(max - y) }
+}

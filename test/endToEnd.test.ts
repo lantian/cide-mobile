@@ -42,7 +42,13 @@ interface Ready {
   code: string
 }
 
-let child: ChildProcess | undefined
+/**
+ * Every example started, not only the last: each test starts its own. Each is the leader of its
+ * own process group (`detached`) and the whole group is killed, because `cargo run` does not
+ * pass a signal on — killing cargo alone left every `fake_cide` listening after the suite ended,
+ * dozens per run.
+ */
+const children: ChildProcess[] = []
 
 /** Start the example and wait for the line it prints when it is listening. */
 async function start(): Promise<Ready> {
@@ -50,9 +56,9 @@ async function start(): Promise<Ready> {
   const proc = spawn(
     'cargo',
     ['run', '--offline', '--quiet', '-p', 'cide-remote', '--example', 'fake_cide', '--', dir, '0'],
-    { cwd: cide, stdio: ['ignore', 'pipe', 'inherit'] },
+    { cwd: cide, stdio: ['ignore', 'pipe', 'inherit'], detached: true },
   )
-  child = proc
+  children.push(proc)
   return new Promise<Ready>((done, reject) => {
     let buffered = ''
     const timer = setTimeout(
@@ -95,7 +101,14 @@ async function untilReady(connection: Connection): Promise<void> {
 const settle = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 afterAll(() => {
-  child?.kill()
+  for (const proc of children) {
+    if (proc.pid === undefined) continue
+    try {
+      process.kill(-proc.pid, 'SIGTERM')
+    } catch {
+      // Already gone.
+    }
+  }
 })
 
 describe.skipIf(!available)('against a real cide', () => {
@@ -148,6 +161,54 @@ describe.skipIf(!available)('against a real cide', () => {
     const screen = events.find((e) => e.t === 'screen')
     expect(screen).toBeDefined()
     expect(JSON.stringify(screen)).toContain('hello from cide')
+
+    connection.stop()
+  })
+
+  /**
+   * A console opened from a notification, before the socket is up. (M91)
+   *
+   * The screen asks to watch the moment it mounts, which on a tap is before the handshake; that
+   * ask used to be dropped and the console waited for a first frame for ever.
+   */
+  it('watches a console asked for before the connection was up', { timeout: 240_000 }, async () => {
+    const ready = await start()
+    const paired: Paired = {
+      instanceId: 'i-example',
+      label: 'example',
+      hosts: [`127.0.0.1:${ready.port}`],
+      deviceId: ready.device,
+      serverPublic: fromHex(ready.serverPublic),
+      key: fromHex(ready.key),
+    }
+
+    // Learn a session's id first, the way the notification carried one.
+    const first: ServerBody[] = []
+    const scout = new Connection({ paired, dial: wsDial, onEvent: (body) => first.push(body) })
+    scout.start()
+    await untilReady(scout)
+    await settle(500)
+    const session = (first.find((e) => e.t === 'sessions') as { sessions: { session: string }[] })
+      .sessions[0]!.session
+    scout.stop()
+
+    const events: ServerBody[] = []
+    const connection = new Connection({ paired, dial: wsDial, onEvent: (body) => events.push(body) })
+    connection.watch(session)
+    connection.acknowledge(session)
+    connection.start()
+    await untilReady(connection)
+    await settle(800)
+    expect(JSON.stringify(events.find((e) => e.t === 'screen'))).toContain('hello from cide')
+
+    // And this cide says it can page the desk and serve milestones; a page of a normal screen is
+    // accepted without a word.
+    expect(connection.has('scrollView')).toBe(true)
+    expect(connection.has('milestones')).toBe(true)
+    const before = events.length
+    connection.tell({ t: 'scrollView', session: session as never, pages: -1, seq: connection.nextSeq() })
+    await settle(400)
+    expect(events.slice(before).filter((e) => e.t === 'error')).toEqual([])
 
     connection.stop()
   })

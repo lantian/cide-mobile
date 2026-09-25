@@ -15,9 +15,12 @@ import { Stack, useLocalSearchParams, useRouter } from 'expo-router'
 import * as registry from '../../../src/store/registry'
 import * as choice from '../../../src/store/projectChoice'
 import { ProjectPicker } from '../../../src/ui/ProjectPicker'
+import { ProjectSwipe } from '../../../src/ui/ProjectSwipe'
 import { consoleCounts, runCounts, taskCounts, waitingByProject } from '../../../src/agents/model'
 import { T } from '../../../src/ui/theme'
 import { Badge } from '../../../src/ui/Badge'
+import { summary as milestoneSummary } from '../../../src/agents/milestones'
+import type { MilestonesView } from '../../../src/protocol/generated'
 
 export default function InstanceScreen() {
   const { iid } = useLocalSearchParams<{ iid: string }>()
@@ -56,67 +59,89 @@ export default function InstanceScreen() {
   const runs = runCounts(choice.forProject(view.runs, project))
   const counts = taskCounts(choice.forProject(view.tasks, project))
   const open = counts.todo + counts.doing + counts.review
+  // The chosen project's milestones, or every project's. Absent from the screen entirely on a
+  // cide that sends none, rather than a row that says "no milestones" about a machine that
+  // simply cannot say.
+  const milestoneViews = Object.entries(view.milestones)
+    .filter(([id, mv]) => mv !== null && (project === null || id === project))
+    .map(([, mv]) => mv as MilestonesView)
+  const milestones = milestoneSummary(milestoneViews)
+  const offersMilestones = registry.connectionOf(iid)?.has('milestones') ?? false
 
   return (
     <>
       <Stack.Screen options={{ title: view.paired.label }} />
-      <ScrollView
-        style={{ flex: 1, backgroundColor: T.bg }}
-        contentContainerStyle={{ padding: 16, gap: 12 }}
-      >
-        <ProjectPicker
-          projects={view.projects}
-          chosen={project}
-          waiting={byProject}
-          onChoose={(next) => choice.choose(iid, next)}
-        />
+      <ProjectSwipe iid={iid} projects={view.projects} chosen={project}>
+        <ScrollView
+          style={{ flex: 1, backgroundColor: T.bg }}
+          contentContainerStyle={{ padding: 16, gap: 12 }}
+        >
+          <ProjectPicker
+            projects={view.projects}
+            chosen={project}
+            waiting={byProject}
+            onChoose={(next) => choice.choose(iid, next)}
+          />
 
-        <Section
-          title="Consoles"
-          detail={
-            consoles.open === 0
-              ? 'Nothing open'
-              : // `working` is stated even when it is zero, because *nothing is running* is the
-                // answer somebody came to the screen for and a missing clause reads as a screen
-                // that has not finished loading. The other two appear only when they are true.
-                [
-                  `${consoles.open} open`,
-                  `${consoles.working} working`,
-                  waiting > 0 ? `${waiting} waiting on you` : undefined,
-                ]
-                  .filter((part) => part !== undefined)
-                  .join(' · ')
-          }
-          alert={waiting > 0}
-          badge={waiting}
-          onPress={() => router.push(`/instance/${iid}/consoles`)}
-        />
-        <Section
-          title="Agents"
-          detail={
-            roster.length === 0
-              ? 'No roles'
-              : [
-                  `${roster.length} role${roster.length === 1 ? '' : 's'}`,
-                  `${runs.running} running`,
-                  runs.paused > 0 ? `${runs.paused} paused` : undefined,
-                  runs.queued > 0 ? `${runs.queued} queued` : undefined,
-                ]
-                  .filter((part) => part !== undefined)
-                  .join(' · ')
-          }
-          onPress={() => router.push(`/instance/${iid}/agents`)}
-        />
-        <Section
-          title="Tasks"
-          detail={
-            counts.todo + counts.doing + counts.review + counts.done === 0
-              ? 'No tasks'
-              : `${open} open · ${counts.doing} in progress · ${counts.review} in review`
-          }
-          onPress={() => router.push(`/instance/${iid}/tasks`)}
-        />
-      </ScrollView>
+          <Section
+            title="Consoles"
+            detail={
+              consoles.open === 0
+                ? 'Nothing open'
+                : // `working` is stated even when it is zero, because *nothing is running* is the
+                  // answer somebody came to the screen for and a missing clause reads as a screen
+                  // that has not finished loading. The other two appear only when they are true.
+                  [
+                    `${consoles.open} open`,
+                    `${consoles.working} working`,
+                    waiting > 0 ? `${waiting} waiting on you` : undefined,
+                  ]
+                    .filter((part) => part !== undefined)
+                    .join(' · ')
+            }
+            alert={waiting > 0}
+            badge={waiting}
+            onPress={() => router.push(`/instance/${iid}/consoles`)}
+          />
+          <Section
+            title="Agents"
+            detail={
+              roster.length === 0
+                ? 'No roles'
+                : [
+                    `${roster.length} role${roster.length === 1 ? '' : 's'}`,
+                    `${runs.running} running`,
+                    runs.paused > 0 ? `${runs.paused} paused` : undefined,
+                    runs.queued > 0 ? `${runs.queued} queued` : undefined,
+                  ]
+                    .filter((part) => part !== undefined)
+                    .join(' · ')
+            }
+            onPress={() => router.push(`/instance/${iid}/agents`)}
+          />
+          <Section
+            title="Tasks"
+            detail={
+              counts.todo + counts.doing + counts.review + counts.done === 0
+                ? 'No tasks'
+                : `${open} open · ${counts.doing} in progress · ${counts.review} in review`
+            }
+            onPress={() => router.push(`/instance/${iid}/tasks`)}
+          />
+          {offersMilestones ? (
+            <Section
+              title="Milestones"
+              detail={milestones.detail}
+              // A failing gate is the one thing here that asks for somebody; a running one is
+              // news but not a request, so it gets the detail's colour and not the border.
+              // A proposal is a question waiting for the user, like a failing gate.
+              alert={milestones.failed || milestones.proposals > 0}
+              badge={milestones.proposals}
+              onPress={() => router.push(`/instance/${iid}/milestones`)}
+            />
+          ) : null}
+        </ScrollView>
+      </ProjectSwipe>
     </>
   )
 }

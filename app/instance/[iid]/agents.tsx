@@ -15,6 +15,7 @@ import { Stack, useLocalSearchParams, useRouter } from 'expo-router'
 import * as registry from '../../../src/store/registry'
 import * as choice from '../../../src/store/projectChoice'
 import { ProjectPicker } from '../../../src/ui/ProjectPicker'
+import { ProjectSwipe } from '../../../src/ui/ProjectSwipe'
 import {
   agentRows,
   canPause,
@@ -80,61 +81,63 @@ export default function AgentsScreen() {
   return (
     <>
       <Stack.Screen options={{ title: 'Agents' }} />
-      <ScrollView
-        style={{ flex: 1, backgroundColor: T.bg }}
-        contentContainerStyle={{ padding: 16, gap: 12 }}
-      >
-        <ProjectPicker
-          projects={view.projects}
-          chosen={project}
-          onChoose={(next) => choice.choose(iid, next)}
-        />
+      <ProjectSwipe iid={iid} projects={view.projects} chosen={project}>
+        <ScrollView
+          style={{ flex: 1, backgroundColor: T.bg }}
+          contentContainerStyle={{ padding: 16, gap: 12 }}
+        >
+          <ProjectPicker
+            projects={view.projects}
+            chosen={project}
+            onChoose={(next) => choice.choose(iid, next)}
+          />
 
-        {/* A shut queue is drawn whether or not anything is running, which is the entire
-            point: pausing does two things, and a project paused while nothing happened to be
-            running used to arrive here looking perfectly ordinary. */}
-        {paused ? (
-          <View
-            style={{
-              padding: 12,
-              borderRadius: 10,
-              borderWidth: 1,
-              borderColor: T.warn,
-              gap: 4,
-            }}
-          >
-            <Text style={{ color: T.warn, fontSize: 14 }}>Dispatch paused</Text>
-            <Text style={{ color: T.dim, fontSize: 12, lineHeight: 18 }}>
-              No new runs will start. Anything already running is frozen.
+          {/* A shut queue is drawn whether or not anything is running, which is the entire
+              point: pausing does two things, and a project paused while nothing happened to be
+              running used to arrive here looking perfectly ordinary. */}
+          {paused ? (
+            <View
+              style={{
+                padding: 12,
+                borderRadius: 10,
+                borderWidth: 1,
+                borderColor: T.warn,
+                gap: 4,
+              }}
+            >
+              <Text style={{ color: T.warn, fontSize: 14 }}>Dispatch paused</Text>
+              <Text style={{ color: T.dim, fontSize: 12, lineHeight: 18 }}>
+                No new runs will start. Anything already running is frozen.
+              </Text>
+            </View>
+          ) : null}
+
+          {live.length > 0 || paused ? (
+            <View style={{ flexDirection: 'row', gap: 10 }}>
+              {all !== 'all' && live.length > 0 ? (
+                <Button label={`Pause all (${live.length})`} onPress={() => everything('runPause')} />
+              ) : null}
+              {/* Offered when the queue is shut even with nothing frozen — otherwise a project
+                  paused while idle has no way back, which is the state that started all this. */}
+              {all !== 'none' || paused ? (
+                <Button label="Resume all" onPress={() => everything('runResume')} />
+              ) : null}
+            </View>
+          ) : null}
+
+          {rows.length === 0 ? (
+            <Text style={{ color: T.dim, lineHeight: 21 }}>
+              {project === null ? 'This instance has no agent roles' : 'This project has no agent roles'}
+              . They are defined in a project's{' '}
+              <Text style={{ color: T.text }}>.cide/agents/</Text> directory.
             </Text>
-          </View>
-        ) : null}
-
-        {live.length > 0 || paused ? (
-          <View style={{ flexDirection: 'row', gap: 10 }}>
-            {all !== 'all' && live.length > 0 ? (
-              <Button label={`Pause all (${live.length})`} onPress={() => everything('runPause')} />
-            ) : null}
-            {/* Offered when the queue is shut even with nothing frozen — otherwise a project
-                paused while idle has no way back, which is the state that started all this. */}
-            {all !== 'none' || paused ? (
-              <Button label="Resume all" onPress={() => everything('runResume')} />
-            ) : null}
-          </View>
-        ) : null}
-
-        {rows.length === 0 ? (
-          <Text style={{ color: T.dim, lineHeight: 21 }}>
-            {project === null ? 'This instance has no agent roles' : 'This project has no agent roles'}
-            . They are defined in a project's{' '}
-            <Text style={{ color: T.text }}>.cide/agents/</Text> directory.
-          </Text>
-        ) : (
-          rows.map((row) => (
-            <Row key={String(row.agent.id)} row={row} iid={iid} connection={connection} />
-          ))
-        )}
-      </ScrollView>
+          ) : (
+            rows.map((row) => (
+              <Row key={String(row.agent.id)} row={row} iid={iid} connection={connection} />
+            ))
+          )}
+        </ScrollView>
+      </ProjectSwipe>
     </>
   )
 }

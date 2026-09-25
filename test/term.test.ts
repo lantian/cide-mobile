@@ -19,6 +19,7 @@ import {
   remainingOf,
   settled,
   wheelAtEdge,
+  paged,
 } from '../src/term/follow'
 import type { ScreenInfo, ScreenUpdate, StyleRun } from '../src/protocol/generated'
 
@@ -445,8 +446,12 @@ describe('the key bar', () => {
     expect(newline?.key).toEqual({ key: { k: 'enter' }, shift: true })
   })
 
-  it('still leads with escape, the key a terminal needs most', () => {
-    expect(KEY_BAR[0]?.label).toBe('esc')
+  it('leads with paging the view, then escape', () => {
+    expect(KEY_BAR.slice(0, 3).map((entry) => entry.label)).toEqual(['pgup', 'pgdn', 'esc'])
+    expect(KEY_BAR[0]?.page).toBe(-1)
+    expect(KEY_BAR[1]?.page).toBe(1)
+    // Nothing else pages.
+    expect(KEY_BAR.slice(2).every((entry) => entry.page === undefined)).toBe(true)
   })
 })
 
@@ -494,5 +499,21 @@ describe('scrolling a program that owns its screen', () => {
   it('paces a held finger', () => {
     expect(at({ offsetY: 0, now: 10_000, lastAt: 9_950 })).toBe(0)
     expect(at({ offsetY: 0, now: 10_000, lastAt: 9_800 })).toBe(-WHEEL_LINES)
+  })
+})
+
+describe('paging the view', () => {
+  it('moves most of a screen, and stops at the ends', () => {
+    const up = paged({ offsetY: 1000, viewport: 500, content: 2000, dir: -1 })
+    expect(up.y).toBe(550)
+    // Reading back: new output must not yank the view to the end.
+    expect(up.follow.stuck).toBe(false)
+    expect(paged({ offsetY: 100, viewport: 500, content: 2000, dir: -1 }).y).toBe(0)
+  })
+
+  it('follows again once a page down reaches the end', () => {
+    const down = paged({ offsetY: 1400, viewport: 500, content: 2000, dir: 1 })
+    expect(down.y).toBe(1500)
+    expect(down.follow).toEqual({ stuck: true, driving: false })
   })
 })

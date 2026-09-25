@@ -19,7 +19,7 @@ import { Markdown } from '../../../src/ui/Markdown'
 import { authorColor, authorLabel, commentTime } from '../../../src/agents/author'
 import type { TaskDetail, TaskStatus } from '../../../src/protocol/generated'
 
-const STATUSES: readonly TaskStatus[] = ['todo', 'doing', 'review', 'done']
+const STATUSES: readonly TaskStatus[] = ['inbox', 'todo', 'doing', 'review', 'done']
 
 export default function TaskScreen() {
   const { iid, tid } = useLocalSearchParams<{ iid: string; tid: string }>()
