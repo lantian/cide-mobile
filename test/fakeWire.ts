@@ -129,6 +129,11 @@ export class FakeSocket {
     this.handlers.onClose()
   }
 
+  /** The socket errors — which, on a real one, is followed by a close. */
+  fail(): void {
+    this.handlers.onError(new Error('connection refused'))
+  }
+
   wire(): Wire {
     return {
       send: (bytes) => this.sent.push(bytes),

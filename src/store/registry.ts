@@ -10,6 +10,7 @@
  * list; everything else a screen needs it asks for.
  */
 import { Connection, wsDial, type Paired, type Phase } from '../net/connection'
+import { clientInfo } from '../device'
 import type {
   AgentRun,
   AwaitingEntry,
@@ -29,6 +30,8 @@ export interface InstanceView {
   readonly paired: Paired
   readonly phase: Phase
   readonly detail: string | undefined
+  /** The address the connection is on, or trying. Worth showing once a machine has several. */
+  readonly host: string | undefined
   readonly projects: readonly RemoteProject[]
   readonly sessions: readonly RemoteSession[]
   readonly awaiting: readonly AwaitingEntry[]
@@ -180,10 +183,11 @@ export function open(paired: Paired): void {
   const connection = new Connection({
     paired,
     dial: wsDial,
+    client: clientInfo(),
     onPhase: (phase, detail) => {
       const entry = entries.get(paired.instanceId)
       if (entry === undefined) return
-      entry.view = { ...entry.view, phase, detail }
+      entry.view = { ...entry.view, phase, detail, host: connection.preferredHost }
       announce()
     },
     onEvent: (body) => receive(paired.instanceId, body),
@@ -195,6 +199,7 @@ export function open(paired: Paired): void {
       paired,
       phase: 'idle',
       detail: undefined,
+      host: undefined,
       projects: [],
       sessions: [],
       awaiting: [],
@@ -233,6 +238,34 @@ export function acknowledged(instanceId: string, session: string): void {
   if (remaining.length === entry.view.awaiting.length) return
   entry.view = { ...entry.view, awaiting: remaining }
   announce()
+}
+
+/**
+ * Draw an instance under a new alias, or under cide's own name again (`undefined`).
+ *
+ * Only the view changes. The connection keeps the `Paired` it was opened with, and that is fine
+ * rather than stale: nothing on the wire carries the alias, and restarting a live socket to hand
+ * it a name it never sends would cost a handshake for nothing.
+ */
+export function relabel(instanceId: string, alias: string | undefined): void {
+  const entry = entries.get(instanceId)
+  if (entry === undefined) return
+  const { alias: _old, ...rest } = entry.view.paired
+  const paired = alias === undefined ? rest : { ...rest, alias }
+  entry.view = { ...entry.view, paired }
+  announce()
+}
+
+/**
+ * Replace an instance's connection with one opened on a new pairing.
+ *
+ * For a re-pair: the old connection holds the old key and addresses, so it is stopped and a
+ * fresh one opened. The view's data goes with it and comes back on the first `welcome`, which is
+ * one round trip of an empty list on a screen the user has just left the pairing flow for.
+ */
+export function reopen(paired: Paired): void {
+  close(paired.instanceId)
+  open(paired)
 }
 
 export function close(instanceId: string): void {

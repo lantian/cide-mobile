@@ -79,48 +79,109 @@ export function settled(remaining: number): Follow {
   return { stuck: atBottom(remaining), driving: false }
 }
 
+/**
+ * Whether content arriving should pull the view to the end *right now*.
+ *
+ * Not while the reader is driving, even if the drag began at the bottom. `grabbed` keeps `stuck`
+ * on purpose — a drag that goes nowhere is still following — but acting on it mid-gesture meant
+ * every repaint of a busy console snapped the view back to the end for the first couple of dozen
+ * points of a drag, which is the whole of a slow one: the finger moved, the text did not, and
+ * scrolling read as broken. Output that arrives during a gesture is caught up when it settles.
+ */
+export function shouldFollow(follow: Follow): boolean {
+  return follow.stuck && !follow.driving
+}
+
 /* --- scrolling a program that owns its own screen ------------------------------------------ */
 
 /**
- * How many lines one edge-drag asks a program to scroll, and how often. (M76)
+ * The gap between two wheel notches sent to a program, in milliseconds — one notch per message,
+ * never a burst.
  *
- * Three lines is a wheel notch on every desktop, so the program moves by an amount its author
- * already tuned for. The interval is what turns a held finger into steady motion without asking
- * a full-screen program to redraw sixty times a second — each notch is a repaint, sent over a
- * phone network, and the answer has to come back before it is worth sending another.
+ * `claude` **accelerates** its wheel: a report arriving within 40 ms of the last one scrolls more
+ * rows than the one before, ramping to six and beyond (read out of Claude Code 2.1.283's own
+ * wheel handler — `wheelScrollAccelerationEnabled`, window 40 ms, step 0.3, ceiling
+ * `max(6, 2 × base)`). The first two cuts of this sent the notches a drag had earned as one
+ * burst per tick — several reports in one write, zero milliseconds apart — which is the
+ * fastest-spinning wheel there is, so every ordinary swipe replaced the whole screen and the
+ * reader lost the line they had just read. Spaced wider than the window, every notch scrolls
+ * the program's base amount and nothing more; 60 rather than 41 because a phone network bunches
+ * messages up on the way.
  */
-export const WHEEL_LINES = 3
-export const WHEEL_INTERVAL_MS = 160
-
-/** How close to an edge counts as being *at* it, in points. Tighter than [`STUCK_WITHIN`]. */
-const EDGE_WITHIN = 6
+export const WHEEL_GAP_MS = 60
 
 /**
- * What to send a program whose screen the reader is trying to scroll past the end of.
+ * Finger travel per wheel notch, in grid lines.
  *
- * A console drawing the alternate screen keeps no scrollback — `claude` takes it, measured — so
- * there is nothing above the viewport to scroll *to*, and the transcript lives in the program.
- * Reaching the edge and pulling is therefore not a scroll at all: it is a request to the program,
- * and it goes out as a wheel.
- *
- * **Only while the reader is driving**, for `moved`'s reason one step further along: a repaint
- * arriving while somebody rests at the top would otherwise send another wheel, which would cause
- * another repaint. That is not a stutter, it is a loop.
- *
- * Answers a signed number of lines — negative is up, towards older output — or `0` for nothing.
+ * A notch moves the program's base amount — a few rows — so a notch per three lines of travel
+ * keeps the text roughly under the finger: a half-screen swipe is about half a screen.
  */
-export function wheelAtEdge(at: {
-  offsetY: number
-  remaining: number
-  driving: boolean
-  now: number
-  lastAt: number
-}): number {
-  if (!at.driving) return 0
-  if (at.now - at.lastAt < WHEEL_INTERVAL_MS) return 0
-  if (at.offsetY <= EDGE_WITHIN) return -WHEEL_LINES
-  if (at.remaining <= EDGE_WITHIN) return WHEEL_LINES
-  return 0
+export const NOTCH_LINES = 3
+
+/**
+ * The most notches allowed to wait for their turn.
+ *
+ * The gap makes the program scroll slower than a quick finger moves, and a queue that kept
+ * everything would go on scrolling long after the finger stopped — the reader lifts their thumb
+ * to read and the text keeps going, which is the "scrolled too far" this whole module is about.
+ * Three is under a fifth of a second of sending: scrolling stops when the finger does.
+ */
+export const MAX_OWED = 3
+
+/**
+ * Turn finger travel into whole wheel notches, carrying the remainder.
+ *
+ * The console drawing the alternate screen keeps no scrollback — `claude` takes it — so there is
+ * nothing on the phone to scroll: the transcript lives in the program, and a drag has to become
+ * wheel notches. `perNotch` points of travel make one — see [`NOTCH_LINES`] — and the fraction
+ * left over is kept for the next move rather than lost: without that, a slow drag of less than a
+ * notch per touch event never scrolls at all.
+ *
+ * `dy` is the finger's travel since the last call, down positive. Dragging **down** pulls older
+ * output into view, which is a wheel **up**: negative.
+ */
+export function wheelFromDrag(
+  carry: number,
+  dy: number,
+  perNotch: number,
+): { lines: number; carry: number } {
+  const total = carry + dy
+  const whole = Math.trunc(total / perNotch)
+  return { lines: whole === 0 ? 0 : -whole, carry: total - whole * perNotch }
+}
+
+/**
+ * Add freshly earned notches to what is waiting, capped at [`MAX_OWED`].
+ *
+ * A reversal **replaces** the queue rather than cancelling against it: a finger that turned
+ * round wants the text to turn round now, not after the old direction has drained.
+ */
+export function owe(owed: number, lines: number): number {
+  const next = owed !== 0 && Math.sign(owed) !== Math.sign(lines) ? lines : owed + lines
+  return Math.max(-MAX_OWED, Math.min(MAX_OWED, next))
+}
+
+/**
+ * Split a drag on a program-owned screen between this view and the program.
+ *
+ * Wrapped, a program's screen is often **taller** than the phone's — a Claude pane's rows are a
+ * desktop's width — and the first cut sent every drag to the program as wheel while pinning this
+ * view to the end. The top of the program's own screen was then under the header for good: Home
+ * took `claude` to the start of the conversation and the start was exactly the part that could
+ * not be seen. So the part of the screen this view is holding back is scrolled **here** first,
+ * and only travel past this view's own edge becomes wheel.
+ *
+ * `dy` is finger travel, down positive; answers where the view goes and the travel left over.
+ */
+export function splitDrag(offsetY: number, max: number, dy: number): { y: number; rest: number } {
+  const y = Math.min(max, Math.max(0, offsetY - dy))
+  return { y, rest: dy - (offsetY - y) }
+}
+
+/** The one notch to send now, and what is left waiting. */
+export function nextNotch(owed: number): { send: number; rest: number } {
+  const send = Math.sign(owed)
+  return { send, rest: owed - send }
 }
 
 /* --- paging the phone's own view ----------------------------------------------------------- */

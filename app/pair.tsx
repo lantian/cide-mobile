@@ -22,6 +22,7 @@ import { groupSas } from '../src/crypto/seal'
 import { pair, pairable } from '../src/net/pair'
 import { InviteError, parseInvite, typedInvite } from '../src/pairing/parse'
 import { wsDial } from '../src/net/connection'
+import { clientInfo } from '../src/device'
 import * as instances from '../src/store/instances'
 import * as registry from '../src/store/registry'
 import { PROTOCOL_VERSION } from '../src/protocol/version'
@@ -84,15 +85,16 @@ export default function Pair() {
       // Said before the first socket is opened, so a scan is acknowledged the instant it is
       // decoded rather than after however long the first unreachable address takes to fail.
       setProgress(scanned !== undefined ? 'Code read. Looking for that cide…' : 'Connecting…')
+      const device = clientInfo()
       const paired = await pair({
         invite,
         signal: controller.signal,
         onAttempt: ({ host, index, total }) =>
           setProgress(total > 1 ? `Trying ${host} — ${index + 1} of ${total}` : `Trying ${host}`),
         dial: wsDial,
-        deviceName: 'phone',
-        platform: 'android',
-        appVersion: '0.1.0',
+        deviceName: device.name,
+        platform: device.platform,
+        appVersion: device.appVersion,
         // Only ever called on the typed road — `pair` does not ask when the key was pinned.
         confirm: (sas) =>
           new Promise<boolean>((answer) => {
@@ -105,8 +107,10 @@ export default function Pair() {
             })
           }),
       })
-      await instances.save(paired)
-      registry.open(paired)
+      // `reopen`, not `open`: a machine already on the list has a connection still holding the
+      // old key and only the old addresses, and `open` leaves a live one alone — which made a
+      // second pairing look as if it had done nothing.
+      registry.reopen(await instances.save(paired))
       router.back()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))

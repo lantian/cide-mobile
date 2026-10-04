@@ -120,14 +120,22 @@ export interface BarKey {
    * at, on both ends: see `scrollView` in cide's `remote.rs`.
    */
   readonly page?: 1 | -1
+  /**
+   * With `page`: the **whole** way, to the top or the bottom, rather than a screenful.
+   *
+   * Home/End used to be the cursor keys, which in a Claude pane move the caret along the input
+   * line — nothing anybody reading back could see happen, so they read as broken. They are view
+   * keys now: they jump this device's view, and on a program-owned screen they also send `key` —
+   * Ctrl+Home/Ctrl+End, which is what `claude` binds to `scroll:top` and `scroll:bottom` (plain
+   * Home/End stay its line-editing keys). Both, because a wrapped program screen is taller than
+   * the phone: the program going to its top is not seen until this view goes to its own. A shell's line start and end
+   * are still on the bar as ^A and ^E.
+   */
+  readonly whole?: boolean
 }
 
 /** What the key bar offers, in the order it draws them. */
 export const KEY_BAR: readonly BarKey[] = [
-  // First, because on a phone they are the ones reached for most: reading back is most of what
-  // anybody does with a console they did not start.
-  { label: 'pgup', key: { key: { k: 'pageUp' } }, page: -1 },
-  { label: 'pgdn', key: { key: { k: 'pageDown' } }, page: 1 },
   { label: 'esc', key: { key: { k: 'escape' } } },
   { label: 'tab', key: { key: { k: 'tab' } } },
   /*
@@ -148,8 +156,20 @@ export const KEY_BAR: readonly BarKey[] = [
   { label: '↓', key: { key: { k: 'down' } } },
   { label: '←', key: { key: { k: 'left' } } },
   { label: '→', key: { key: { k: 'right' } } },
-  { label: 'home', key: { key: { k: 'home' } } },
-  { label: 'end', key: { key: { k: 'end' } } },
+]
+
+/**
+ * Moving the view: a page, or the whole way. Drawn after the arrows and before the Ctrl chords.
+ *
+ * They used to lead the bar, when they were the only dependable way to read back. A drag is that
+ * now — on the normal screen it scrolls the phone's copy, on a program-owned one it becomes
+ * wheel — so they give the first place to `esc` and sit with the other movement keys.
+ */
+export const PAGE_BAR: readonly BarKey[] = [
+  { label: 'home', key: { key: { k: 'home' }, ctrl: true }, page: -1, whole: true },
+  { label: 'end', key: { key: { k: 'end' }, ctrl: true }, page: 1, whole: true },
+  { label: 'pgup', key: { key: { k: 'pageUp' } }, page: -1 },
+  { label: 'pgdn', key: { key: { k: 'pageDown' } }, page: 1 },
 ]
 
 /**

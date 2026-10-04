@@ -1,3 +1,4 @@
+import { questionText } from '../../../src/questions/model'
 /**
  * This instance's task board. (M75)
  *
@@ -161,6 +162,15 @@ export default function TasksScreen() {
                       {task.title}
                     </Text>
                   </View>
+                  {/* A task waiting for the user says so on the row (cide M132): the card is where
+                      it is answered, and a row that looks like every other is never opened. */}
+                  {(task.question ?? null) !== null ? (
+                    <Text style={{ color: T.warn, fontSize: 13 }} numberOfLines={2}>
+                      {`Waiting for your answer: ${questionText(task.question!)}`}
+                    </Text>
+                  ) : task.acceptance === 'user' && task.status === 'review' ? (
+                    <Text style={{ color: T.warn, fontSize: 13 }}>Waiting for your acceptance</Text>
+                  ) : null}
                   <Text style={{ color: T.dim, fontSize: 12 }} numberOfLines={1}>
                     {[
                       task.status,

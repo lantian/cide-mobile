@@ -17,6 +17,7 @@
  */
 import * as SecureStore from 'expo-secure-store'
 import type { Paired } from '../net/connection'
+import { keepAlias, mergeHosts } from './repair'
 
 const INDEX_KEY = 'cide.instances'
 const itemKey = (id: string) => `cide.instance.${id}`
@@ -25,6 +26,8 @@ const itemKey = (id: string) => `cide.instance.${id}`
 interface Stored {
   instanceId: string
   label: string
+  /** This phone's own name for it, when the user gave one. See `instanceName.ts`. */
+  alias?: string
   hosts: string[]
   deviceId: string
   serverPublic: string
@@ -66,6 +69,7 @@ export async function list(): Promise<Instance[]> {
     out.push({
       instanceId: stored.instanceId,
       label: stored.label,
+      ...(stored.alias === undefined ? {} : { alias: stored.alias }),
       hosts: stored.hosts,
       deviceId: stored.deviceId,
       serverPublic: unhex(stored.serverPublic),
@@ -81,12 +85,23 @@ export async function list(): Promise<Instance[]> {
  *
  * Replacing rather than appending is what the instance id is *for*: re-pairing a cide you already
  * know must update that row, not add a second one for the same machine under a new key.
+ *
+ * But not everything in the row is replaced. The addresses are *added to* — pairing again over a
+ * second network is how a phone learns it — and the alias is kept, since a pairing never carries
+ * one. `repair.ts` has the rules.
+ *
+ * Returns what was stored, which is what a connection must be opened with: the pairing alone
+ * would drop the addresses and the name it was just merged with.
  */
-export async function save(paired: Paired, preferred?: string): Promise<void> {
+export async function save(paired: Paired, preferred?: string): Promise<Paired> {
+  const earlier = await readItem(paired.instanceId)
+  const alias = keepAlias(paired.alias, earlier?.alias)
+  const hosts = mergeHosts(paired.hosts, earlier?.hosts ?? [])
   const stored: Stored = {
     instanceId: paired.instanceId,
     label: paired.label,
-    hosts: [...paired.hosts],
+    ...(alias === undefined ? {} : { alias }),
+    hosts,
     deviceId: paired.deviceId,
     serverPublic: hex(paired.serverPublic),
     key: hex(paired.key),
@@ -96,6 +111,32 @@ export async function save(paired: Paired, preferred?: string): Promise<void> {
   const ids = await readIndex()
   if (!ids.includes(paired.instanceId)) {
     await SecureStore.setItemAsync(INDEX_KEY, JSON.stringify([...ids, paired.instanceId]))
+  }
+  const { alias: _dropped, ...rest } = paired
+  return { ...rest, ...(alias === undefined ? {} : { alias }), hosts }
+}
+
+/**
+ * Give an instance this phone's own name, or take it away (`undefined`) to go back to cide's.
+ *
+ * Rewrites the one stored row and nothing else — not `save`, which would round-trip the key
+ * through `Paired` for a change that has nothing to do with it.
+ */
+export async function rename(instanceId: string, alias: string | undefined): Promise<void> {
+  const stored = await readItem(instanceId)
+  if (stored === null) return
+  const { alias: _old, ...rest } = stored
+  const next: Stored = alias === undefined ? rest : { ...rest, alias }
+  await SecureStore.setItemAsync(itemKey(instanceId), JSON.stringify(next))
+}
+
+async function readItem(instanceId: string): Promise<Stored | null> {
+  const raw = await SecureStore.getItemAsync(itemKey(instanceId))
+  if (raw === null) return null
+  try {
+    return JSON.parse(raw) as Stored
+  } catch {
+    return null
   }
 }
 

@@ -13,6 +13,7 @@
  */
 import { AppState } from 'react-native'
 import * as registry from '../store/registry'
+import { nameOf } from '../store/instanceName'
 import { acknowledge, decide, type Ledger, type SessionLabel } from './decide'
 import { apply, dismissFor, prepare } from './notifier'
 
@@ -73,7 +74,7 @@ async function tick(): Promise<void> {
     }
     const decision = decide({
       instanceId: view.paired.instanceId,
-      instanceLabel: view.paired.label,
+      instanceLabel: nameOf(view.paired),
       awaiting: view.awaiting,
       labels,
       // Nothing feeds this yet: a run that *ended* is a second signal, and the set is the one

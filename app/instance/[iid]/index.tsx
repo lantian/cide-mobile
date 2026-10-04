@@ -13,6 +13,7 @@ import { useEffect, useSyncExternalStore } from 'react'
 import { Pressable, ScrollView, Text, View } from 'react-native'
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router'
 import * as registry from '../../../src/store/registry'
+import { nameOf } from '../../../src/store/instanceName'
 import * as choice from '../../../src/store/projectChoice'
 import { ProjectPicker } from '../../../src/ui/ProjectPicker'
 import { ProjectSwipe } from '../../../src/ui/ProjectSwipe'
@@ -70,7 +71,7 @@ export default function InstanceScreen() {
 
   return (
     <>
-      <Stack.Screen options={{ title: view.paired.label }} />
+      <Stack.Screen options={{ title: nameOf(view.paired) }} />
       <ProjectSwipe iid={iid} projects={view.projects} chosen={project}>
         <ScrollView
           style={{ flex: 1, backgroundColor: T.bg }}

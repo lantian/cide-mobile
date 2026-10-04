@@ -65,9 +65,13 @@ export function HistoryView({
       </View>
     )
   }
+  // A fragment, not a wrapping `View`: every line here has to be a **direct** child of the
+  // scroller, because that is the only level `maintainVisibleContentPosition` anchors at. Inside
+  // one wrapper, a page prepended mid-fling grew the one child the scroller could see and the text
+  // slid out from under the finger — `Screen.tsx` has the rest.
   return (
-    <View style={{ paddingTop: 8 }}>
-      <View style={{ alignItems: 'center', paddingVertical: 6 }}>
+    <>
+      <View key="earlier" style={{ alignItems: 'center', paddingTop: 14, paddingBottom: 6 }}>
         {history.loading ? (
           <Text style={{ color: T.dim, fontSize: 12 }}>Reading earlier lines…</Text>
         ) : onEarlier !== null ? (
@@ -104,6 +108,7 @@ export function HistoryView({
           Without it the join is invisible, and the live grid's blank rows read as a gap in the
           transcript rather than as the bottom of a terminal. */}
       <View
+        key="seam"
         style={{
           borderBottomWidth: 1,
           borderColor: T.border,
@@ -111,6 +116,6 @@ export function HistoryView({
           marginHorizontal: 8,
         }}
       />
-    </View>
+    </>
   )
 }

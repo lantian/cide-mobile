@@ -21,6 +21,11 @@
 export const PROTOCOL_VERSION = 1
 
 /**
+ * Who accepts a task's work when it is not a reviewer. See [`Task::acceptance`]. (M132)
+ */
+export type Acceptance = "user";
+
+/**
  * A subagent role name — `developer`, `qa`, `artist`. (M18)
  *
  * A string, and not a uuid, because **the user writes it themselves in a file in their own
@@ -194,7 +199,15 @@ poolPosition: string | null,
  * that roster already makes, and none at all on the per-run broadcasts that carry no root.
  * A run with no task stood in the project root and never had one.
  */
-worktree: boolean, };
+worktree: boolean, 
+/**
+ * The Claude session of the review tab that owns this run's task right now, while that tab
+ * is open. (M114) The row draws it as "In review by orchestrator", a link that reveals the
+ * tab: a run parked `Idle` because its task went to review otherwise looked stuck, with
+ * nothing saying that somebody else holds the task. Filled, like [`Self::worktree`], only
+ * where a roster is built — the review-tab table lives in the app.
+ */
+reviewer?: SessionId, };
 
 /**
  * Which of the two directories a definition lives in.
@@ -320,7 +333,7 @@ expectScreen?: string, } | { "t": "paste", session: SessionId, text: string, seq
 /**
  * See [`Self::Input`]'s field of the same name.
  */
-expectScreen?: string, } | { "t": "scroll", session: SessionId, lines: number, seq: number, } | { "t": "acknowledge", session: SessionId, } | { "t": "watchScreen", session: SessionId, } | { "t": "unwatchScreen", session: SessionId, } | { "t": "scrollbackPage", session: SessionId, fromTop: number, rows: number, } | { "t": "runStop", project: ProjectId, run: RunId, reason?: string, force?: boolean, } | { "t": "runPause", project: ProjectId, run?: RunId, } | { "t": "runResume", project: ProjectId, run?: RunId, } | { "t": "dispatch", request: DispatchRequest, } | { "t": "taskNew", task: TaskNew, } | { "t": "taskEdit", project: ProjectId, task: TaskId, edit: TaskEdit, } | { "t": "taskGet", project: ProjectId, task: TaskId, } | { "t": "scrollView", session: SessionId, pages: number, seq: number, } | { "t": "milestonesGet", project: ProjectId, } | { "t": "gateRun", project: ProjectId, milestone: string, } | { "t": "milestoneAccept", project: ProjectId, milestone: string, } | { "t": "proposalAccept", project: ProjectId, id: string, } | { "t": "proposalReject", project: ProjectId, id: string, } | { "t": "checkLog", project: ProjectId, kind: string, key: string, } | { "t": "ping" };
+expectScreen?: string, } | { "t": "scroll", session: SessionId, lines: number, seq: number, } | { "t": "acknowledge", session: SessionId, } | { "t": "watchScreen", session: SessionId, } | { "t": "unwatchScreen", session: SessionId, } | { "t": "scrollbackPage", session: SessionId, fromTop: number, rows: number, } | { "t": "runStop", project: ProjectId, run: RunId, reason?: string, force?: boolean, } | { "t": "runPause", project: ProjectId, run?: RunId, } | { "t": "runResume", project: ProjectId, run?: RunId, } | { "t": "dispatch", request: DispatchRequest, } | { "t": "taskNew", task: TaskNew, } | { "t": "taskEdit", project: ProjectId, task: TaskId, edit: TaskEdit, } | { "t": "taskGet", project: ProjectId, task: TaskId, } | { "t": "taskRespond", project: ProjectId, task: TaskId, response: TaskResponse, } | { "t": "scrollView", session: SessionId, pages: number, seq: number, } | { "t": "milestonesGet", project: ProjectId, } | { "t": "gateRun", project: ProjectId, milestone: string, } | { "t": "milestoneAccept", project: ProjectId, milestone: string, } | { "t": "proposalAccept", project: ProjectId, id: string, } | { "t": "proposalReject", project: ProjectId, id: string, } | { "t": "checkLog", project: ProjectId, kind: string, key: string, } | { "t": "attachmentRead", project: ProjectId, task: TaskId, attachment: TaskAttachmentId, offset: number, len: number, } | { "t": "ping" };
 
 /**
  * One frame from a device.
@@ -412,7 +425,68 @@ prompt?: string,
  * (`agent_rpc::RegistrySink` fills this from the `Scope`), so the pane that asked is the
  * pane that hears.
  */
-notify?: RunNotify, };
+notify?: RunNotify, 
+/**
+ * Work that lives somewhere other than this project's tracker — a Jira issue the caller read
+ * through its own MCP server, or a sentence the user typed into the console. (M104)
+ *
+ * Exclusive with [`Self::task`]. It differs from a task-less run in the one way that made
+ * the user ask for it: such a run still gets **a worktree of its own**, named after
+ * [`ExternalWork::reference`] (or its title), because "implement these two things in
+ * parallel" is the case, and two runs editing one project root is the collision M40's
+ * task-less road was never meant to carry.
+ */
+external?: ExternalWork, 
+/**
+ * Run this dispatch on this harness rather than the one the role resolves to. (M104)
+ *
+ * One run only: the role's file and the machine's overrides are untouched, so the next
+ * dispatch of the same role is back on its own harness. `None` is the ordinary road.
+ */
+harness?: Harness, 
+/**
+ * And this model, for this run only. Passed through as the harness's `--model`. (M104)
+ */
+model?: string, 
+/**
+ * Start a new context rather than continue the role's own conversation on this task.
+ * (M116) Without it a dispatch onto a (role, task) that has been worked before continues it:
+ * its instructions go into the run still holding the pair, or a new run resumes the last
+ * ended one's conversation. `false`, and absent from older clients, is the default.
+ */
+fresh?: boolean, };
+
+/**
+ * A piece of work that is not a task in this project's tracker. (M104)
+ *
+ * See [`DispatchRequest::external`]. Carried whole into the run's opening line, because there is
+ * no `cide_task_get` that could hand the run its statement later — which is also why `brief` is
+ * flattened to one line at the edge like every other prompt, and why a long statement belongs in
+ * the source the reference points at rather than here.
+ */
+export type ExternalWork = { 
+/**
+ * Where the work is written down, e.g. `JIRA-123` or a URL. Names the worktree when present.
+ */
+reference?: string, title: string, brief: string, };
+
+/**
+ * When the active milestone's gate runs without being asked.
+ *
+ * A gate is a project's own acceptance run, and on the projects milestones were built for it is
+ * long: selfcraft's `slice` took 16 minutes and `items` 7, terrastrike's gates 7–15 with a
+ * `timeoutSecs` of one to two hours. `Merge` reruns it after every agent merge, so a batch of
+ * subagents finishing a few minutes apart keeps a gate running for the whole afternoon, each
+ * verdict about a commit already superseded by the next merge. `Idle` waits for the project to
+ * go quiet — the spinner's wake, which runs a stale gate before it plans — so a batch costs one
+ * run; `Manual` leaves it to the Run gate button. Every mode still runs it when asked, and when a
+ * plan is defined or a proposal changes it: those are deliberate and rare.
+ *
+ * Deserialised leniently: a value this build does not know reads as `Merge` rather than failing
+ * the plan, because a typo in one key must not cost the whole `milestones` block (see
+ * [`MilestonePlan`]).
+ */
+export type GateRuns = "merge" | "idle" | "manual";
 
 /**
  * A milestone's gate, as last seen. Outbound.
@@ -444,6 +518,23 @@ log?: string, };
  * the registry. That is the shape the trait was chosen for.
  */
 export type Harness = "claude" | "opencode" | "qwen" | "codex" | "mimo";
+
+/**
+ * The image formats cide will put on screen, as **sniffed from the file's own bytes**.
+ *
+ * Not derived from the extension. The extension decides which *viewer* a tab opens with —
+ * that rule is `ui/src/panes/imageKinds.ts`, on the frontend, because it has to be answered
+ * before any IPC happens — and this is the answer to the different question of what the file
+ * actually contains. Keeping them apart is what lets a `.png` that is really a JPEG render
+ * correctly *and* describe itself honestly in the status bar, and it is what makes
+ * "this claims to be a PNG and is not" a sentence rather than a blank pane.
+ *
+ * The list is what a WebKitGTK `<img>` decodes without help. TIFF, AVIF, JPEG XL and `.svgz`
+ * are deliberately absent: the first two are engine-version-dependent, and a gzipped SVG
+ * needs a `Content-Encoding` the asset protocol does not set, so it would fail *silently* in
+ * the image decoder — the one failure mode this whole feature is written to avoid.
+ */
+export type ImageFormat = "png" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "svg";
 
 /**
  * Which cide a device is talking to.
@@ -563,7 +654,8 @@ active?: string,
 verify: string, 
 /**
  * How many open tasks (todo, doing, review) the active milestone may hold before a new one
- * the orchestrator creates goes to the inbox instead. `None` is [`DEFAULT_MAX_OPEN`].
+ * the orchestrator creates under it is refused (it went to the inbox until M132, which is
+ * how milestones filled up with noticed work). `None` is [`DEFAULT_MAX_OPEN`].
  */
 maxOpen?: number, 
 /**
@@ -571,7 +663,12 @@ maxOpen?: number,
  * gate reads. A branch that touches one is refused at integration: the work may not move the
  * goal it is measured against.
  */
-guardPaths: Array<string>, };
+guardPaths: Array<string>, 
+/**
+ * When cide runs the active gate by itself. Absent is [`GateRuns::Merge`], the behaviour
+ * every plan had before this field existed.
+ */
+gateRuns?: GateRuns, };
 
 /**
  * One task under a milestone: enough to draw a row and open the card. Outbound.
@@ -721,6 +818,16 @@ before?: string,
  * A unified diff of `before` → `content`, for reading.
  */
 diff: string, };
+
+export type QuestionChoices = { text: string, selection: QuestionSelection, options: Array<QuestionOption>, };
+
+export type QuestionOption = { id: string, title: string, description?: string, 
+/**
+ * An image attachment on this task. The agent tool accepts a source path and copies it.
+ */
+image?: TaskAttachmentId, };
+
+export type QuestionSelection = "single" | "multiple";
 
 /**
  * A role, as a device lists it. (M75)
@@ -1036,7 +1143,7 @@ features: Array<string>, } | { "t": "paired", device: string, key: string,
  * placeholder shared by every typed pairing makes two machines look like one — so the
  * list would show one entry that connects to whichever answered last.
  */
-instance: string, label: string, } | { "t": "projects", rev: number, projects: Array<RemoteProject>, } | { "t": "sessions", sessions: Array<RemoteSession>, } | { "t": "sessionState", session: SessionId, state: SessionState, } | { "t": "awaiting", entries: Array<AwaitingEntry>, } | { "t": "error", kind: string, detail: string, } | { "t": "prompt", session: SessionId, prompt: PermissionPrompt, } | { "t": "promptGone", session: SessionId, } | { "t": "dispatched", run: RunId, } | { "t": "screen", update: ScreenUpdate, } | { "t": "scrollback", session: SessionId, page: ScrollbackCapture, } | { "t": "screenGone", session: SessionId, } | { "t": "runs", project: ProjectId, runs: Array<AgentRun>, } | { "t": "roster", project: ProjectId, agents: Array<RemoteAgent>, 
+instance: string, label: string, } | { "t": "projects", rev: number, projects: Array<RemoteProject>, } | { "t": "sessions", sessions: Array<RemoteSession>, } | { "t": "sessionState", session: SessionId, state: SessionState, } | { "t": "awaiting", entries: Array<AwaitingEntry>, } | { "t": "error", kind: string, detail: string, } | { "t": "prompt", session: SessionId, prompt: PermissionPrompt, } | { "t": "promptGone", session: SessionId, } | { "t": "dispatched", run: RunId, } | { "t": "taskResponded", project: ProjectId, task: TaskId, } | { "t": "screen", update: ScreenUpdate, } | { "t": "scrollback", session: SessionId, page: ScrollbackCapture, } | { "t": "screenGone", session: SessionId, } | { "t": "runs", project: ProjectId, runs: Array<AgentRun>, } | { "t": "roster", project: ProjectId, agents: Array<RemoteAgent>, 
 /**
  * Whether the queue will start anything new.
  *
@@ -1055,7 +1162,7 @@ dispatching: boolean, } | { "t": "task", project: ProjectId, id: TaskId,
  * much stack. Serde and ts-rs both see straight through a `Box`, so the wire and the
  * TypeScript are unchanged.
  */
-task?: TaskDetail, } | { "t": "board", project: ProjectId, tasks: Array<TaskRow>, } | { "t": "milestones", project: ProjectId, view?: MilestonesView, } | { "t": "checkLog", project: ProjectId, kind: string, key: string, text?: string, } | { "t": "desync", why: string, } | { "t": "pong" } | { "t": "goingAway", why: string, };
+task?: TaskDetail, } | { "t": "board", project: ProjectId, tasks: Array<TaskRow>, } | { "t": "milestones", project: ProjectId, view?: MilestonesView, } | { "t": "checkLog", project: ProjectId, kind: string, key: string, text?: string, } | { "t": "attachmentChunk", project: ProjectId, task: TaskId, attachment: TaskAttachmentId, offset: number, total: number, data: string, image?: ImageFormat, } | { "t": "desync", why: string, } | { "t": "pong" } | { "t": "goingAway", why: string, };
 
 /**
  * One frame to a device.
@@ -1258,6 +1365,17 @@ editedAtUnixMs: bigint | null,
  */
 deleted: boolean, 
 /**
+ * Superseded by a later comment its own author left in the same turn. (M132)
+ *
+ * A run reports **once** per turn: a later comment of its own on its own task in the same
+ * turn supersedes the earlier one instead of piling up beside it. Nothing is rewritten —
+ * the log stays append-only, which is the whole of [`Self::text`]'s trust argument — this only
+ * hides the earlier one from other agents' reads (`cide_task_get`) and collapses it on the
+ * card. Like [`Self::deleted`] it only ever goes false → true, so a merge takes either side's
+ * `true`.
+ */
+superseded?: boolean, 
+/**
  * Files attached to this comment, oldest first. (M39)
  *
  * `#[serde(default)]` for [`Task::links`]' reason and with the same non-bump of
@@ -1325,7 +1443,7 @@ attachments: Array<TaskAttachment>, history: Array<TaskStatusChange>, };
  * from no code path, and whose handling arm would have minted a pane showing nothing. Add it
  * with the gesture, in the same commit.
  */
-export type TaskEdit = { "kind": "setTitle", title: string, } | { "kind": "setBody", body: string, } | { "kind": "setStatus", status: TaskStatus, } | { "kind": "assign", agent: AgentId | null, } | { "kind": "setSession", session: SessionId | null, } | { "kind": "setChange", change: ChangeName | null, } | { "kind": "link", link: LinkType, target: TaskId, } | { "kind": "unlink", link: LinkType, target: TaskId, } | { "kind": "comment", text: string, } | { "kind": "editComment", id: CommentId, text: string, } | { "kind": "deleteComment", id: CommentId, } | { "kind": "detachAttachment", attachment: TaskAttachmentId, };
+export type TaskEdit = { "kind": "setTitle", title: string, } | { "kind": "setBody", body: string, } | { "kind": "setStatus", status: TaskStatus, } | { "kind": "assign", agent: AgentId | null, } | { "kind": "setSession", session: SessionId | null, } | { "kind": "setChange", change: ChangeName | null, } | { "kind": "link", link: LinkType, target: TaskId, } | { "kind": "unlink", link: LinkType, target: TaskId, } | { "kind": "comment", text: string, } | { "kind": "editComment", id: CommentId, text: string, } | { "kind": "deleteComment", id: CommentId, } | { "kind": "detachAttachment", attachment: TaskAttachmentId, } | { "kind": "setTouches", touches: Array<string>, } | { "kind": "setAcceptance", acceptance: Acceptance | null, } | { "kind": "setQuestion", question: TaskQuestion | null, } | { "kind": "supersede", comment: CommentId, };
 
 /**
  * One task in `.cide/tasks.json`, as a short string — `t-17`. (M18)
@@ -1452,7 +1570,34 @@ links?: Array<TaskLinkSpec>,
  * board is broadcast once with the attachments in place instead of once without and once
  * with, and a dropped file in the New task dialog is one gesture, not two.
  */
-attachments?: Array<string>, };
+attachments?: Array<string>, 
+/**
+ * [`Task::touches`] at creation. Absent means none declared. (M132)
+ */
+touches?: Array<string>, 
+/**
+ * [`Task::acceptance`] at creation. (M132)
+ */
+acceptance?: Acceptance, };
+
+/**
+ * A text question remains a string on disk and on the wire for older callers.
+ */
+export type TaskQuestion = string | QuestionChoices;
+
+/**
+ * The user's answer to a task waiting for them — the Waiting-for-you list's three buttons.
+ * (M132) One command rather than three task edits, because each is several writes that must land
+ * together and one of them starts a run: "send back" is a comment, a status and a dispatch into
+ * the same role's conversation, and a UI composing that from `task_edit` calls would start the
+ * role before the note it is meant to read had reached the board.
+ */
+export type TaskResponse = { "kind": "accept" } | { "kind": "sendBack", note: string, } | { "kind": "answer", text: string, selectedIds?: Array<string>, 
+/**
+ * The displayed question, checked under the store lock before writing an answer.
+ * Omitted by legacy text-only callers.
+ */
+expectedQuestion?: TaskQuestion, };
 
 /**
  * One task as the *board* carries it: everything except its body, its log and its files. (M68)
@@ -1509,7 +1654,20 @@ change?: ChangeName,
  * to open one file per task to answer "is this one blocked" would be loading the whole board
  * to render a list, which is the cost this type exists to avoid.
  */
-links: Array<TaskLink>, createdBy: TaskAuthor, createdUnixMs: bigint, 
+links: Array<TaskLink>, 
+/**
+ * [`Task::touches`], on the row because admission reads it across tasks. (M132)
+ */
+touches?: Array<string>, 
+/**
+ * [`Task::acceptance`]. (M132)
+ */
+acceptance?: Acceptance, 
+/**
+ * [`Task::question`], on the row because the planner and *Waiting for you* read it across
+ * tasks. (M132)
+ */
+question?: TaskQuestion, createdBy: TaskAuthor, createdUnixMs: bigint, 
 /**
  * See [`Task::updated_unix_ms`] — the merge tiebreak and the panel's in-group sort key.
  *
@@ -1616,4 +1774,13 @@ running: boolean, last?: CheckResult,
 /**
  * The full output, as [`GateState::log`].
  */
-log?: string, };
+log?: string, 
+/**
+ * Red verifies in a row on this task since the last green one. (M114)
+ */
+failures: number, 
+/**
+ * `agents.verifyRetries` as it stood when this was drawn: while `failures` is at most this,
+ * a red verify went back to the run itself; past it, to the reviewer.
+ */
+retries: number, };

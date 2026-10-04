@@ -32,7 +32,14 @@ import {
   type Handshake,
 } from '../crypto/seal'
 import { decodeUtf8, encodeUtf8 } from '../crypto/utf8'
-import type { ClientBody, ClientFrame, ProjectId, ServerBody, ServerFrame } from '../protocol/generated'
+import type {
+  ClientBody,
+  ClientFrame,
+  ClientInfo,
+  ProjectId,
+  ServerBody,
+  ServerFrame,
+} from '../protocol/generated'
 import { PROTOCOL_VERSION, compatible, mismatch } from '../protocol/version'
 import { backoff, type Backoff } from './backoff'
 
@@ -64,6 +71,11 @@ export interface Paired {
   readonly instanceId: string
   /** What to call it before it has said its own name. */
   readonly label: string
+  /**
+   * What this phone's user renamed it to, if they did. Drawn in place of `label` (`nameOf`) and
+   * never sent to cide — see `store/instanceName.ts`.
+   */
+  readonly alias?: string
   /**
    * Addresses to try, in order, as `host:port`.
    *
@@ -115,6 +127,11 @@ export interface ConnectionOptions {
   dial: Dial
   clock?: Clock
   random?: () => number
+  /**
+   * What this device says it is in `hello` — `device.ts`'s `clientInfo()` in the app. Passed in
+   * rather than read here, so this module stays loadable without expo.
+   */
+  client?: ClientInfo
   /** Every frame the server sent that was not the answer to a request. */
   onEvent?: (body: ServerBody) => void
   onPhase?: (phase: Phase, detail?: string) => void
@@ -175,6 +192,10 @@ export class Connection {
   private stopped = false
   /** The host that answered last, tried first next time. */
   private preferred: string | undefined
+  /** Whether anything at all came back on the current socket. See `dropped`. */
+  private heardBack = false
+  /** Addresses that have failed in a row without answering. A full round of them backs off. */
+  private silentInARow = 0
   /** The id of the ping this connection is waiting on, if any. */
   private awaitingPong: number | null = null
 
@@ -293,7 +314,7 @@ export class Connection {
     }
 
     const { handshake, secret } = beginHandshake(Mode.Resume, this.options.paired.deviceId)
-    let settled = false
+    this.heardBack = false
     // cide greets before anything is sealed, so the first message on every socket is one. It is
     // read and *checked* rather than skipped: this end already holds the key it paired with, so
     // the greeting is never evidence here — but a greeting carrying a different key is a fact
@@ -301,8 +322,17 @@ export class Connection {
     // nothing, and reads exactly like a bad network for as long as the user keeps retrying.
     let greeted = false
 
+    // Every handler below first asks whether its socket is still *the* socket. A socket this
+    // connection has given up on keeps talking after `close()`: React Native reports an abandoned
+    // attempt's error and close later, and a failing one reports both, one after the other.
+    // Unguarded, each of those landed on whatever socket had replaced it — so trying a second
+    // address meant the first one's late close dropped the connection the second had just
+    // brought up (connected, a notification, then "disconnected"), and on a network where only
+    // the second address works the first one's close kept killing it mid-handshake.
+    const live = () => this.wire === wire
     const wire = this.options.dial(`ws://${host}`, {
       onOpen: () => {
+        if (!live()) return
         this.enter('handshaking')
         wire.send(encodeHandshake(handshake))
         this.channel = deriveChannel(
@@ -316,7 +346,8 @@ export class Connection {
         this.send({ id: this.nextId++, body: { t: 'hello', protocol: PROTOCOL_VERSION, client: this.client() } })
       },
       onMessage: (data) => {
-        settled = true
+        if (!live()) return
+        this.heardBack = true
         if (!greeted) {
           greeted = true
           const greeting = decodeGreeting(data)
@@ -340,16 +371,21 @@ export class Connection {
         this.receive(data, handshake)
       },
       onClose: () => {
-        if (!settled) this.preferred = undefined
-        this.dropped('the connection closed')
+        if (live()) this.dropped('the connection closed')
       },
       onError: (error) => {
-        this.dropped(error instanceof Error ? error.message : 'the connection failed')
+        if (live()) this.dropped(error instanceof Error ? error.message : 'the connection failed')
       },
     })
     this.wire = wire
     this.preferred = host
 
+    // An address on a network the phone is not on — the office LAN from a café — usually does
+    // not refuse, it just never opens, and without this each one cost the full handshake
+    // timeout before the next was tried.
+    this.after(CANDIDATE_TIMEOUT, () => {
+      if (this.phase === 'connecting') this.dropped(`${host} did not answer`)
+    })
     this.after(HANDSHAKE_TIMEOUT, () => {
       if (this.phase === 'connecting' || this.phase === 'handshaking') {
         this.dropped('cide did not answer the handshake')
@@ -396,6 +432,7 @@ export class Connection {
     void handshake
 
     if (frame.body.t === 'welcome') {
+      this.silentInARow = 0
       if (!compatible(frame.body.protocol)) {
         this.terminal('incompatible', mismatch(frame.body.protocol, frame.body.instance.name))
         return
@@ -480,6 +517,27 @@ export class Connection {
       this.enter('idle', why)
       return
     }
+    // An address that never said a word is the wrong network, not a flaky one: move on to the
+    // next straight away, and back off only once every address has been tried in turn.
+    //
+    // This used to go back to the first address after every failure — `onClose` cleared the
+    // preferred host and `onError` left it on the one that had just failed — so every address
+    // after the first was never tried at all, and a machine paired over both its LAN and a
+    // remote address could only ever be reached over whichever came first.
+    const hosts = this.options.paired.hosts
+    if (!this.heardBack && hosts.length > 1) {
+      const at = this.preferred === undefined ? -1 : hosts.indexOf(this.preferred)
+      this.preferred = hosts[(at + 1) % hosts.length]
+      this.silentInARow += 1
+      if (this.silentInARow < hosts.length) {
+        this.enter('connecting', why)
+        this.after(0, () => {
+          if (!this.stopped) this.open()
+        })
+        return
+      }
+      this.silentInARow = 0
+    }
     // Read the rung *then* advance, or the first failure waits the second rung and the ladder
     // is silently one step ahead of the one written down.
     const wait = this.back.next()
@@ -518,8 +576,10 @@ export class Connection {
     wire.send(channel.seal(json))
   }
 
-  private client() {
-    return { name: this.options.paired.label, platform: 'unknown', appVersion: '0.1.0' }
+  // The *device's* name. This used to send `paired.label` — the name of the machine being
+  // connected to — so cide heard every phone introduce itself as cide.
+  private client(): ClientInfo {
+    return this.options.client ?? { name: 'phone', platform: 'unknown', appVersion: '0.1.0' }
   }
 
   private enter(phase: Phase, detail?: string): void {
@@ -585,6 +645,14 @@ export const wsDial: Dial = (url, handlers) => {
   socket.onerror = (event: Event) => handlers.onError(event)
   return {
     send: (bytes) => socket.send(bytes),
-    close: () => socket.close(),
+    // Deaf before it is closed: nothing a closed socket says afterwards is news to anybody.
+    // `Connection`'s own guard is what the tests can see; this is the same rule at the source.
+    close: () => {
+      socket.onopen = null
+      socket.onmessage = null
+      socket.onclose = null
+      socket.onerror = null
+      socket.close()
+    },
   }
 }

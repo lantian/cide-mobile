@@ -10,15 +10,19 @@ import { RowStore } from '../src/term/rowStore'
 import { ScreenStore } from '../src/term/screenStore'
 import { fitFontSize, wrap, wrappedHeight } from '../src/term/wrap'
 import { shapeRow } from '../src/term/frame'
-import { KEY_BAR, PAD, afterChange, delta, keysFor } from '../src/term/keys'
+import { KEY_BAR, PAD, PAGE_BAR, afterChange, delta, keysFor } from '../src/term/keys'
 import {
   FOLLOWING,
-  WHEEL_LINES,
+  MAX_OWED,
   grabbed,
   moved,
   remainingOf,
   settled,
-  wheelAtEdge,
+  shouldFollow,
+  nextNotch,
+  owe,
+  splitDrag,
+  wheelFromDrag,
   paged,
 } from '../src/term/follow'
 import type { ScreenInfo, ScreenUpdate, StyleRun } from '../src/protocol/generated'
@@ -367,6 +371,18 @@ describe('following the output', () => {
     expect(settled(25).stuck).toBe(false)
   })
 
+  /**
+   * The snap-back: a drag that began at the bottom of a busy console kept `stuck`, and every
+   * repaint pulled the view back to the end before the finger had moved it far enough to say
+   * otherwise.
+   */
+  it('does not follow while the reader is driving, even from the bottom', () => {
+    expect(shouldFollow(FOLLOWING)).toBe(true)
+    expect(shouldFollow(grabbed(FOLLOWING))).toBe(false)
+    expect(shouldFollow(settled(0))).toBe(true)
+    expect(shouldFollow(settled(3000))).toBe(false)
+  })
+
   it('measures what a scroll event reports', () => {
     expect(remainingOf(event(0))).toBe(0)
     expect(remainingOf(event(512))).toBe(512)
@@ -446,12 +462,27 @@ describe('the key bar', () => {
     expect(newline?.key).toEqual({ key: { k: 'enter' }, shift: true })
   })
 
-  it('leads with paging the view, then escape', () => {
-    expect(KEY_BAR.slice(0, 3).map((entry) => entry.label)).toEqual(['pgup', 'pgdn', 'esc'])
-    expect(KEY_BAR[0]?.page).toBe(-1)
-    expect(KEY_BAR[1]?.page).toBe(1)
-    // Nothing else pages.
-    expect(KEY_BAR.slice(2).every((entry) => entry.page === undefined)).toBe(true)
+  /** Touch is how a view scrolls; the page keys are kept, out of the thumb's way. */
+  it('leads with escape and keeps paging for the end', () => {
+    expect(KEY_BAR[0]?.label).toBe('esc')
+    expect(KEY_BAR.every((entry) => entry.page === undefined)).toBe(true)
+    expect(PAGE_BAR.map((entry) => [entry.label, entry.page, entry.whole === true])).toEqual([
+      ['home', -1, true],
+      ['end', 1, true],
+      ['pgup', -1, false],
+      ['pgdn', 1, false],
+    ])
+  })
+
+  /**
+   * Plain Home/End move `claude`'s caret along its input line, which from a phone looks like
+   * nothing happened. Ctrl+Home/End are its `scroll:top`/`scroll:bottom`.
+   */
+  it('asks a program for its top and bottom with Ctrl+Home and Ctrl+End', () => {
+    const home = PAGE_BAR.find((entry) => entry.label === 'home')
+    const end = PAGE_BAR.find((entry) => entry.label === 'end')
+    expect(home?.key).toEqual({ key: { k: 'home' }, ctrl: true })
+    expect(end?.key).toEqual({ key: { k: 'end' }, ctrl: true })
   })
 })
 
@@ -476,29 +507,56 @@ describe('the field is what was seen', () => {
 })
 
 describe('scrolling a program that owns its screen', () => {
-  const at = (over: Partial<Parameters<typeof wheelAtEdge>[0]> = {}) =>
-    wheelAtEdge({ offsetY: 500, remaining: 500, driving: true, now: 10_000, lastAt: 0, ...over })
-
-  it('asks for older output at the top and newer at the bottom', () => {
-    expect(at({ offsetY: 0 })).toBe(-WHEEL_LINES)
-    expect(at({ remaining: 0 })).toBe(WHEEL_LINES)
+  it('turns dragging down into older output, a notch per notch of travel', () => {
+    expect(wheelFromDrag(0, 45, 15)).toEqual({ lines: -3, carry: 0 })
+    expect(wheelFromDrag(0, -30, 15)).toEqual({ lines: 2, carry: 0 })
   })
 
-  it('asks for nothing in the middle', () => {
-    expect(at()).toBe(0)
+  /** Without the carry a slow drag — under a line per touch event — never scrolls at all. */
+  it('carries the part of a line a slow drag has not finished', () => {
+    let carry = 0
+    let lines = 0
+    for (let i = 0; i < 10; i += 1) {
+      const step = wheelFromDrag(carry, 4, 15)
+      carry = step.carry
+      lines += step.lines
+    }
+    expect(lines).toBe(-2)
+    expect(carry).toBe(10)
+  })
+
+  /** Past the cap, a quick finger's notches are dropped rather than scrolled after it stops. */
+  it('keeps only a few notches waiting', () => {
+    expect(owe(0, -10)).toBe(-MAX_OWED)
+    expect(owe(-MAX_OWED, -1)).toBe(-MAX_OWED)
+  })
+
+  it('turns round at once when the finger does', () => {
+    expect(owe(-3, 1)).toBe(1)
+    expect(owe(2, -1)).toBe(-1)
   })
 
   /**
-   * The loop this prevents: a wheel makes the program repaint, the repaint is a scroll event, and
-   * a rule that read it would send another wheel. `moved`'s rule, one step further along.
+   * A wrapped Claude screen is taller than the phone. Its top has to be reachable by scrolling
+   * this view before anything is asked of the program, or it is never seen at all.
    */
-  it('never asks unless the reader is driving', () => {
-    expect(at({ offsetY: 0, driving: false })).toBe(0)
+  it('scrolls what this view holds back before wheeling the program', () => {
+    // 300 points of the screen below the header; dragging down reveals them first.
+    expect(splitDrag(300, 300, 100)).toEqual({ y: 200, rest: 0 })
+    expect(splitDrag(50, 300, 100)).toEqual({ y: 0, rest: 50 })
+    // At the top, all of it is wheel.
+    expect(splitDrag(0, 300, 40)).toEqual({ y: 0, rest: 40 })
+    // Dragging up goes back to this view's end first, then asks for newer.
+    expect(splitDrag(250, 300, -80)).toEqual({ y: 300, rest: -30 })
+    // A screen that fits has nothing held back.
+    expect(splitDrag(0, 0, -20)).toEqual({ y: 0, rest: -20 })
   })
 
-  it('paces a held finger', () => {
-    expect(at({ offsetY: 0, now: 10_000, lastAt: 9_950 })).toBe(0)
-    expect(at({ offsetY: 0, now: 10_000, lastAt: 9_800 })).toBe(-WHEEL_LINES)
+  /** One report per message: a burst is what `claude` reads as a fast-spinning wheel. */
+  it('sends one notch at a time', () => {
+    expect(nextNotch(-3)).toEqual({ send: -1, rest: -2 })
+    expect(nextNotch(2)).toEqual({ send: 1, rest: 1 })
+    expect(nextNotch(0)).toEqual({ send: 0, rest: 0 })
   })
 })
 

@@ -37,17 +37,24 @@
  * substitutes from the system, which is the same bug through the other door: an italic run in a
  * face with a different advance walks the rest of the line out of the grid.
  */
-import { memo, useEffect, useRef, useSyncExternalStore, type ReactNode } from 'react'
+import { memo, useEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from 'react'
 import { Keyboard, ScrollView, Text, View, type TextStyle } from 'react-native'
+import { Gesture, GestureDetector } from 'react-native-gesture-handler'
 import type { ScreenColor, StyleRun } from '../../protocol/generated'
 import {
   FOLLOWING,
+  NOTCH_LINES,
+  WHEEL_GAP_MS,
   grabbed,
   moved,
+  nextNotch,
+  owe,
+  splitDrag,
   paged,
   remainingOf,
   settled,
-  wheelAtEdge,
+  shouldFollow,
+  wheelFromDrag,
   type Follow,
 } from '../follow'
 import type { RowStore } from '../rowStore'
@@ -233,7 +240,8 @@ export interface ScreenViewProps {
    */
   onNearTop?: () => void
   /**
-   * The reader has pulled past an edge of a screen the **program** owns, and it should scroll.
+   * The reader is dragging a screen the **program** owns, and it should scroll: signed wheel
+   * lines, negative towards older output.
    *
    * Offered only where the child has asked for mouse reports — a wheel sent anywhere else
    * arrives as typed characters, which is cide's refusal to make rather than this component's,
@@ -242,9 +250,10 @@ export interface ScreenViewProps {
   onWheel?: (lines: number) => void
   /**
    * Scroll the phone's own view a page, up (`-1`) or down (`1`). A new object is a new press —
-   * the identity is the signal, so two presses the same way are two pages.
+   * the identity is the signal, so two presses the same way are two pages. `whole` goes all the
+   * way: the top of what is held, or the end, following again.
    */
-  page?: { readonly dir: 1 | -1 } | null
+  page?: { readonly dir: 1 | -1; readonly whole?: boolean } | null
   /** What to say before the first frame: the connection's state, so a wait says what it is. */
   pending?: string
 }
@@ -275,8 +284,6 @@ export function ScreenView({
    * because two hundred lines of scrollback just arrived* is worse than either.
    */
   const follow = useRef<Follow>(FOLLOWING)
-  /** When the last wheel went out, so a held finger is steady motion and not a flood. */
-  const wheeledAt = useRef(0)
   const scroller = useRef<ScrollView>(null)
   /** Where the view is, as the last scroll or layout said. What a page is measured from. */
   const metrics = useRef({ offsetY: 0, viewport: 0, content: 0 })
@@ -287,6 +294,19 @@ export function ScreenView({
     // repaint does not reliably report where it went, and a page measured from a stale offset
     // jumps from somewhere the reader never was.
     const at = metrics.current
+    // Home/End: to the top of what is held, or back to the end and following. The top is also a
+    // request for more above it, which lands above the reader without moving them.
+    if (page.whole === true) {
+      if (page.dir > 0) {
+        follow.current = FOLLOWING
+        scroller.current?.scrollToEnd({ animated: false })
+      } else {
+        follow.current = settled(Math.max(0, at.content - at.viewport))
+        scroller.current?.scrollTo({ y: 0, animated: false })
+        onNearTop?.()
+      }
+      return
+    }
     const offsetY = follow.current.stuck ? Math.max(0, at.content - at.viewport) : at.offsetY
     const next = paged({ ...at, offsetY, dir: page.dir })
     follow.current = next.follow
@@ -309,7 +329,7 @@ export function ScreenView({
    */
   useEffect(() => {
     const shown = Keyboard.addListener('keyboardDidShow', () => {
-      if (!follow.current.stuck) return
+      if (!shouldFollow(follow.current)) return
       requestAnimationFrame(() =>
         requestAnimationFrame(() => scroller.current?.scrollToEnd({ animated: false })),
       )
@@ -322,6 +342,97 @@ export function ScreenView({
   // every character in the row, which is the property the bundle was for.
   const advance = fontSize * ADVANCE
   const budget = wrapped ? Math.max(8, Math.floor(width / advance)) : null
+
+  /*
+   * A drag on a screen the program owns, as wheel. See `wheelFromDrag`, and `WHEEL_GAP_MS` for
+   * why the notches go out one at a time.
+   *
+   * This replaced pulling past the scroller's edge, which could not work where it mattered most:
+   * a Claude pane's grid fits the viewport, a `ScrollView` whose content fits never scrolls, and
+   * so it never reported the pull at all — PgUp was the only way to read back.
+   *
+   * No fling. A coast after the finger lifts is text moving that the reader did not move, over a
+   * network they cannot see the far end of; it was the other half of "scrolls too much".
+   */
+  const drag = useRef({
+    lastY: 0,
+    carry: 0,
+    owed: 0,
+    sentAt: 0,
+    timer: null as ReturnType<typeof setTimeout> | null,
+  })
+  const wheelRef = useRef(onWheel)
+  wheelRef.current = onWheel
+  // Before the early return below, with the hooks; `info` may still be null here.
+  const wheeling = info !== null && info.alt && info.mouse !== 'off' && onWheel !== undefined
+  const pan = useMemo(() => {
+    const tick = () => {
+      const d = drag.current
+      d.timer = null
+      if (d.owed === 0) return
+      const { send, rest } = nextNotch(d.owed)
+      d.owed = rest
+      d.sentAt = Date.now()
+      wheelRef.current?.(send)
+      if (d.owed !== 0) d.timer = setTimeout(tick, WHEEL_GAP_MS)
+    }
+    const travel = (finger: number) => {
+      const d = drag.current
+      // This view's overflow first — see `splitDrag` — then the program.
+      const at = metrics.current
+      const max = Math.max(0, at.content - at.viewport)
+      const { y, rest: dy } = splitDrag(at.offsetY, max, finger)
+      if (y !== at.offsetY) {
+        scroller.current?.scrollTo({ y, animated: false })
+        metrics.current = { ...at, offsetY: y }
+        // The same rule a drag's end applies: back at the end is following again, anywhere else
+        // is reading, and a repaint must not pull it back down.
+        follow.current = settled(max - y)
+      }
+      if (dy === 0) return
+      const step = wheelFromDrag(d.carry, dy, lineHeight * NOTCH_LINES)
+      d.carry = step.carry
+      if (step.lines === 0) return
+      d.owed = owe(d.owed, step.lines)
+      if (d.timer !== null) return
+      // At once if the last notch is far enough behind, so a drag answers immediately;
+      // otherwise when it is.
+      const wait = WHEEL_GAP_MS - (Date.now() - d.sentAt)
+      if (wait <= 0) tick()
+      else d.timer = setTimeout(tick, wait)
+    }
+    return Gesture.Pan()
+      .enabled(wheeling)
+      .runOnJS(true)
+      // Vertical only: a sideways pan belongs to the horizontal scroller in pan mode, and a tap
+      // that wanders a pixel is still a tap.
+      .activeOffsetY([-8, 8])
+      .failOffsetX([-12, 12])
+      .onBegin(() => {
+        drag.current.lastY = 0
+        drag.current.carry = 0
+      })
+      .onUpdate((event) => {
+        travel(event.translationY - drag.current.lastY)
+        drag.current.lastY = event.translationY
+      })
+  }, [lineHeight, wheeling])
+
+  // Entering a program-owned screen starts at its end, following, wherever the reader had left
+  // the view on the normal screen; a drag scrolls up from there (see `splitDrag`).
+  useEffect(() => {
+    if (!wheeling) return
+    follow.current = FOLLOWING
+    scroller.current?.scrollToEnd({ animated: false })
+  }, [wheeling])
+
+  useEffect(
+    () => () => {
+      const d = drag.current
+      if (d.timer !== null) clearTimeout(d.timer)
+    },
+    [],
+  )
 
   if (info === null) {
     return (
@@ -350,12 +461,6 @@ export function ScreenView({
     </View>
   )
 
-  const body = (
-    <View>
-      {above?.({ fontSize, lineHeight, budget })}
-      {grid}
-    </View>
-  )
 
   // Panning keeps the columns exact, which is what a TUI needs; wrapping keeps the text
   // readable, which is what a Claude pane needs. Neither is right for both.
@@ -363,7 +468,7 @@ export function ScreenView({
   // The *vertical* scroller is the outer one either way, and it is the one that follows the
   // output: a horizontal scroller nested inside it pans, and telling that one to scroll to the
   // end would send the view sideways.
-  return (
+  const scrollView = (
     <ScrollView
       ref={scroller}
       style={{ backgroundColor: BG }}
@@ -381,9 +486,19 @@ export function ScreenView({
        * the first visible row is the one to hold still. It is also what makes fetching earlier
        * lines *while scrolling* possible at all: `History.tsx`'s header argued for a button
        * precisely because a prepend used to move the view, and this is the answer to that.
+       *
+       * It anchors **direct children only**. Each scrollback line, the seam and the live grid
+       * are therefore children of this scroller in wrapped mode, not of a wrapper: with one
+       * wrapper there was exactly one child, its top never moved, and a page fetched by
+       * `onNearTop` mid-fling shifted every line under the finger while this prop did nothing.
+       * Pan mode still has the horizontal scroller as its one child and gets no anchoring —
+       * wrapping is the reading mode, panning is for a TUI's columns.
        */
       maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
       scrollEventThrottle={64}
+      // On a program-owned screen the drag is the `GestureDetector`'s below, which scrolls this
+      // view itself before it wheels the program: two things reading one finger is the jitter.
+      scrollEnabled={!wheeling}
       // The four gesture edges, because a drag and its momentum are one act and either half can
       // be the last thing that happens: a slow release ends at `onScrollEndDrag` with no
       // momentum at all, and a fling ends well after it.
@@ -401,21 +516,6 @@ export function ScreenView({
         }
         // Two screens of warning, so the page has arrived by the time the reader gets there.
         if (contentOffset.y < layoutMeasurement.height * 2) onNearTop?.()
-        // And, for a screen the program owns, pulling past an edge asks *it* to scroll.
-        if (onWheel !== undefined && info !== null && info.mouse !== 'off') {
-          const now = Date.now()
-          const lines = wheelAtEdge({
-            offsetY: contentOffset.y,
-            remaining,
-            driving: follow.current.driving,
-            now,
-            lastAt: wheeledAt.current,
-          })
-          if (lines !== 0) {
-            wheeledAt.current = now
-            onWheel(lines)
-          }
-        }
       }}
       onScrollEndDrag={(event) => {
         follow.current = settled(remainingOf(event.nativeEvent))
@@ -425,10 +525,15 @@ export function ScreenView({
       }}
       onMomentumScrollEnd={(event) => {
         follow.current = settled(remainingOf(event.nativeEvent))
+        // Output that arrived while the finger was on the glass was, rightly, not followed; a
+        // gesture that settled at the bottom catches up on it now. Not at `onScrollEndDrag`,
+        // where a fling upwards from the bottom still measures as *at the bottom* and would be
+        // cut dead by the jump.
+        if (shouldFollow(follow.current)) scroller.current?.scrollToEnd({ animated: false })
       }}
       onContentSizeChange={(_, height) => {
         metrics.current = { ...metrics.current, content: height }
-        if (follow.current.stuck) scroller.current?.scrollToEnd({ animated: false })
+        if (shouldFollow(follow.current)) scroller.current?.scrollToEnd({ animated: false })
       }}
       // Opening a console lands at the end, whatever the content did on the way there. The
       // size change above is what normally does it; this is the one that covers a first layout
@@ -436,16 +541,26 @@ export function ScreenView({
       // to fetch — there is no *change* to react to, so nothing would have scrolled at all.
       onLayout={(event) => {
         metrics.current = { ...metrics.current, viewport: event.nativeEvent.layout.height }
-        if (follow.current.stuck) scroller.current?.scrollToEnd({ animated: false })
+        if (shouldFollow(follow.current)) scroller.current?.scrollToEnd({ animated: false })
       }}
     >
       {wrapped ? (
-        body
+        <>
+          {above?.({ fontSize, lineHeight, budget })}
+          {grid}
+        </>
       ) : (
         <ScrollView horizontal showsHorizontalScrollIndicator>
-          {body}
+          <View>
+            {above?.({ fontSize, lineHeight, budget })}
+            {grid}
+          </View>
         </ScrollView>
       )}
     </ScrollView>
   )
+
+  // Always the detector, switched with `enabled`, so the program taking or leaving the alternate
+  // screen does not remount the scroller under the reader.
+  return <GestureDetector gesture={pan}>{scrollView}</GestureDetector>
 }

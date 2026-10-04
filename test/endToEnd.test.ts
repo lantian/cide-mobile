@@ -26,8 +26,9 @@ import { PAIR_TIMEOUT, pair } from '../src/net/pair'
 import { parseInvite, typedInvite } from '../src/pairing/parse'
 import { fromBase64Url, fromHex } from '../src/crypto/seal'
 import { PROTOCOL_VERSION } from '../src/protocol/version'
-import type { ServerBody } from '../src/protocol/generated'
+import type { ClientBody, ServerBody } from '../src/protocol/generated'
 import { HistoryStore, PAGE, historyText } from '../src/term/history'
+import { download } from '../src/attachments/fetchChunks'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const cide = process.env.CIDE_REPO ?? resolve(here, '../../cide')
@@ -277,6 +278,86 @@ describe.skipIf(!available)('against a real cide', () => {
     expect(text[text.length - 1]).toBe(`history line ${depth - 1}`)
 
     connection.stop()
+  })
+
+  it('downloads a task\'s attachments and is told which one is a picture', { timeout: 240_000 }, async () => {
+    const ready = await start()
+    const paired: Paired = {
+      instanceId: 'i-example',
+      label: 'example',
+      hosts: [`127.0.0.1:${ready.port}`],
+      deviceId: ready.device,
+      serverPublic: fromHex(ready.serverPublic),
+      key: fromHex(ready.key),
+    }
+    const connection = new Connection({ paired, dial: wsDial, onEvent: () => undefined })
+    connection.start()
+    await untilReady(connection)
+    expect(connection.has('attachments')).toBe(true)
+
+    const project = '00000000-0000-4000-8000-000000000001'
+    const answer = await connection.request({ t: 'taskGet', project, task: 't-7' } as never)
+    if (answer.t !== 'task' || answer.task === undefined) throw new Error(`got ${answer.t}`)
+    const body = answer.task.attachments[0]
+    const onComment = answer.task.comments.flatMap((c) => c.attachments)[0]
+    expect(body?.name).toBe('dot.png')
+    expect(onComment?.name).toBe('notes.txt')
+
+    const request = (b: ClientBody) => connection.request(b)
+    const png = await download(request, { project, task: 't-7', attachment: String(body?.id) })
+    expect(png.image).toBe('png')
+    expect(Buffer.from(png.base64, 'base64').subarray(0, 8)).toEqual(
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    )
+    expect(png.bytes).toBe(Number(body?.bytes))
+
+    const text = await download(request, { project, task: 't-7', attachment: String(onComment?.id) })
+    expect(text.image).toBeNull()
+    expect(Buffer.from(text.base64, 'base64').toString()).toBe('what the reviewer saw\n'.repeat(20))
+
+    await expect(
+      download(request, { project, task: 't-7', attachment: 'no-such' }),
+    ).rejects.toThrow(/no such attachment/)
+    connection.stop()
+  })
+
+  it('answers a visual question atomically and refuses stale or duplicate answers', { timeout: 240_000 }, async () => {
+    const ready = await start()
+    const paired: Paired = {
+      instanceId: 'i-example', label: 'example', hosts: [`127.0.0.1:${ready.port}`],
+      deviceId: ready.device, serverPublic: fromHex(ready.serverPublic), key: fromHex(ready.key),
+    }
+    const connection = new Connection({ paired, dial: wsDial, onEvent: () => undefined })
+    connection.start()
+    try {
+      await untilReady(connection)
+      expect(connection.has('taskRespond')).toBe(true)
+      const project = '00000000-0000-4000-8000-000000000001'
+      const shown = await connection.request({ t: 'taskGet', project, task: 't-8' } as ClientBody)
+      if (shown.t !== 'task' || shown.task === undefined) throw new Error(`got ${shown.t}`)
+      const question = shown.task.row.question
+      if (question === undefined || typeof question === 'string') throw new Error('expected a visual question')
+      const image = question.options[0]?.image
+      const bytes = await download((body) => connection.request(body), { project, task: 't-8', attachment: String(image) })
+      expect(bytes.image).toBe('png')
+      const response = { kind: 'answer', text: 'Use both', selectedIds: ['blue', 'green'], expectedQuestion: question }
+      const stale = await connection.request({ t: 'taskRespond', project, task: 't-8',
+        response: { ...response, expectedQuestion: { ...question, text: 'A replaced question' } } } as ClientBody)
+      expect(stale.t).toBe('error')
+      if (stale.t === 'error') expect(stale.detail).toMatch(/question changed/)
+      const success = await connection.request({ t: 'taskRespond', project, task: 't-8', response } as ClientBody)
+      expect(success).toMatchObject({ t: 'taskResponded', project, task: 't-8' })
+      const duplicate = await connection.request({ t: 'taskRespond', project, task: 't-8', response } as ClientBody)
+      expect(duplicate.t).toBe('error')
+      if (duplicate.t === 'error') expect(duplicate.detail).toMatch(/already been answered/)
+      const after = await connection.request({ t: 'taskGet', project, task: 't-8' } as ClientBody)
+      if (after.t !== 'task' || after.task === undefined) throw new Error(`got ${after.t}`)
+      expect(after.task.row.question).toBeUndefined()
+      expect(after.task.row.status).toBe('doing')
+      const answers = after.task.comments.filter((c) => c.text.startsWith('**The user answered:**'))
+      expect(answers).toHaveLength(1)
+      expect(answers[0]?.text).toContain('blue, green Use both')
+    } finally { connection.stop() }
   })
 
   it('pairs from an invite, then connects with what it was given', { timeout: 240_000 }, async () => {

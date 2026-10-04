@@ -10,6 +10,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { randomBytes } from '@noble/hashes/utils'
 import {
   Connection,
+  CANDIDATE_TIMEOUT,
   Disconnected,
   HEARTBEAT_EVERY,
   type Paired,
@@ -299,6 +300,77 @@ describe('Connection', () => {
     expect(many.sockets[1]!.url).toContain('10.0.0.1')
   })
 
+  it('moves on to the next address when one never answers, without waiting out a backoff', () => {
+    // One machine, two roads: the LAN address first, the remote one second. Away from home the
+    // first never opens. This used to redial it for ever and never try the second.
+    const many = harness(['192.168.1.4:17643', '10.8.1.5:17643'])
+    many.connection.start()
+    expect(many.sockets[0]!.url).toContain('192.168.1.4')
+
+    many.clock.advance(CANDIDATE_TIMEOUT)
+    expect(many.sockets[1]!.url).toContain('10.8.1.5')
+    const socket = many.sockets[1]!
+    socket.open()
+    socket.say(welcome(), 1)
+    expect(many.connection.state.phase).toBe('ready')
+    expect(many.connection.preferredHost).toBe('10.8.1.5:17643')
+
+    // And the road that answered is the one tried first after a drop.
+    socket.drop()
+    many.clock.advance(RUNGS[0]!)
+    expect(many.sockets[2]!.url).toContain('10.8.1.5')
+  })
+
+  it('moves on when an address refuses, too', () => {
+    const many = harness(['192.168.1.4:17643', '10.8.1.5:17643'])
+    many.connection.start()
+    many.sockets[0]!.drop()
+    many.clock.advance(0)
+    expect(many.sockets[1]!.url).toContain('10.8.1.5')
+  })
+
+  it('is not dropped by an address it has already given up on', () => {
+    // The field report: the remote address timed out, the LAN one connected — and then the
+    // abandoned attempt's late close arrived and took the working connection down with it.
+    const many = harness(['203.0.113.7:17643', '192.168.1.4:17643'])
+    many.connection.start()
+    many.clock.advance(CANDIDATE_TIMEOUT)
+    const lan = many.sockets[1]!
+    lan.open()
+    lan.say(welcome(), 1)
+    expect(many.connection.state.phase).toBe('ready')
+
+    many.sockets[0]!.drop()
+    expect(many.connection.state.phase).toBe('ready')
+    expect(many.sockets).toHaveLength(2)
+  })
+
+  it('does not count one failure twice', () => {
+    // A failing socket reports an error and then a close. Counted as two failures, the second
+    // skipped straight past the next address, which with two of them meant never trying it.
+    const many = harness(['192.168.1.4:17643', '203.0.113.7:17643'])
+    many.connection.start()
+    many.sockets[0]!.fail()
+    many.sockets[0]!.drop()
+    many.clock.advance(0)
+    expect(many.sockets).toHaveLength(2)
+    expect(many.sockets[1]!.url).toContain('203.0.113.7')
+  })
+
+  it('backs off only once every address has failed in a row', () => {
+    const many = harness(['192.168.1.4:17643', '10.8.1.5:17643'])
+    many.connection.start()
+    many.sockets[0]!.drop()
+    many.clock.advance(0)
+    many.sockets[1]!.drop()
+    many.clock.advance(0)
+    // A full round has failed: the next dial waits for the backoff, and is the first address.
+    expect(many.sockets).toHaveLength(2)
+    expect(many.connection.state.phase).toBe('backoff')
+    many.clock.advance(RUNGS[0]!)
+    expect(many.sockets[2]!.url).toContain('192.168.1.4')
+  })
+
   it('stops when told, and rejects what was in flight', async () => {
     const socket = ready(h)
     const answer = h.connection.request({ t: 'ping' })
@@ -335,16 +407,17 @@ describe('waking up from a locked phone', () => {
 
     // The phone wakes and every timer that came due fires together.
     //
-    // Advanced past the longest rung those six drops could have reached, and no further: an
-    // unanswered connection is *supposed* to retry, so a longer advance would be measuring the
-    // retry ladder rather than the storm this test is about.
-    h.clock.advance(RUNGS[5]!)
+    // Advanced past the first rung and short of the new socket's own give-up: an unanswered
+    // connection is *supposed* to retry — after `CANDIDATE_TIMEOUT` now, not the handshake's
+    // fifteen seconds — so a longer advance would be measuring the retry ladder rather than the
+    // storm this test is about.
+    h.clock.advance(RUNGS[0]! + CANDIDATE_TIMEOUT - 1)
 
-    // Exactly one new socket. With the timer clears removed from **both** `dropped` and `open`
-    // this is six — one per drop that piled up, each orphaning the socket before it, which is
-    // the burst of `Connection reset by peer` cide logged from a burst of source ports. Either
-    // clear alone is enough, so this fails only when both are gone; that is the property worth
-    // pinning, rather than which of the two happens to be doing the work today.
+    // Exactly one new socket. Three things each stop the storm on their own: the timer clears in
+    // `dropped` and in `open`, and the guard that ignores a socket already given up on (which
+    // makes the five drops after the first no-ops). Unguarded and uncleared, this is three
+    // within this window — each queued reconnect orphaning the socket before it, which is the
+    // burst of `Connection reset by peer` cide logged from a burst of source ports.
     expect(h.sockets.length - before).toBe(1)
   })
 

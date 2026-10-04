@@ -24,11 +24,12 @@ import {
 } from 'react-native'
 import { Stack, useLocalSearchParams } from 'expo-router'
 import * as registry from '../../../src/store/registry'
+import { nameOf } from '../../../src/store/instanceName'
 import * as notify from '../../../src/notify/driver'
 import { ScreenView } from '../../../src/term/ui/Screen'
 import { HistoryView } from '../../../src/term/ui/History'
 import { PAGE } from '../../../src/term/history'
-import { CTRL_BAR, KEY_BAR, PAD, afterChange, type BarKey } from '../../../src/term/keys'
+import { CTRL_BAR, KEY_BAR, PAD, PAGE_BAR, afterChange, type BarKey } from '../../../src/term/keys'
 import { T } from '../../../src/ui/theme'
 import { KindTile, look } from '../../../src/ui/Kind'
 import type { KeyEvent, PermissionPrompt, SessionId } from '../../../src/protocol/generated'
@@ -60,7 +61,7 @@ export default function SessionScreen() {
   const [wrapped, setWrapped] = useState(true)
   const [error, setError] = useState<string | null>(null)
   /** The last PgUp/PgDn of this device's own view; a new object per press. See `ScreenView`. */
-  const [page, setPage] = useState<{ readonly dir: 1 | -1 } | null>(null)
+  const [page, setPage] = useState<{ readonly dir: 1 | -1; readonly whole?: boolean } | null>(null)
   const input = useRef<TextInput>(null)
   /** What the field was last *seen* holding — never what it was asked to hold. `afterChange`. */
   const seen = useRef(PAD)
@@ -220,6 +221,15 @@ export default function SessionScreen() {
         return
       }
       const alt = screen.info?.alt ?? false
+      // Home/End: the whole way. There is no wire message for the desk's pane to do the same,
+      // so on the normal screen only this view jumps; on a program-owned one the program is
+      // asked too, and both ends see its redraw — this view as well, because a wrapped program
+      // screen is taller than the phone and its top would otherwise stay out of sight.
+      if (entry.whole === true) {
+        if (alt) send(entry.key)
+        setPage({ dir: entry.page, whole: true })
+        return
+      }
       if (!alt) setPage({ dir: entry.page })
       if (connection === undefined) return
       if (connection.has('scrollView')) {
@@ -313,14 +323,14 @@ export default function SessionScreen() {
           onNearTop={() => {
             if (history.earlierFrom !== null) askPage(history.earlierFrom, PAGE)
           }}
-          // Pulling past an edge of a screen the program owns. (M76)
+          // Dragging a screen the program owns. (M76)
           //
           // `claude` takes the alternate screen, so the terminal keeps no history for it and
           // there is nothing to page — the transcript is in the program, and the way a terminal
-          // asks a program to show more of it is a wheel. cide refuses one aimed at a child that
+          // asks a program to show more of it is a wheel: the drag's travel, line for line. cide refuses one aimed at a child that
           // never enabled mouse reports, which is why this can be offered unconditionally.
           page={page}
-          pending={pendingText(view?.phase, view?.detail, view?.paired.label)}
+          pending={pendingText(view?.phase, view?.detail, view === undefined ? undefined : nameOf(view.paired))}
           onWheel={(lines) => {
             if (connection === undefined) return
             connection.tell({ t: 'scroll', session, lines, seq: connection.nextSeq() })
@@ -372,7 +382,7 @@ export default function SessionScreen() {
         style={{ maxHeight: 46, backgroundColor: T.panel, borderTopWidth: 1, borderColor: T.border }}
         contentContainerStyle={{ alignItems: 'center', paddingHorizontal: 8, gap: 6 }}
       >
-        {[...KEY_BAR, ...CTRL_BAR].map((entry) => (
+        {[...KEY_BAR, ...PAGE_BAR, ...CTRL_BAR].map((entry) => (
           <Pressable
             key={entry.label}
             onPress={() => press(entry)}
