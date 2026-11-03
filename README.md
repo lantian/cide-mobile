@@ -1,6 +1,6 @@
 # cide-mobile
 
-The companion application for [cide](../cide): connect to one or more running instances, see
+The companion application for [cide](https://github.com/lantian/cide): connect to one or more running instances, see
 which AI consoles and agent runs are live, open one, read it, type into it, and be told when
 a turn ends.
 
