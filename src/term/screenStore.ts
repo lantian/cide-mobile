@@ -16,6 +16,8 @@
  */
 import type { Cursor, ScreenInfo, ScreenUpdate } from '../protocol/generated'
 import { RowStore } from './rowStore'
+import { plainText, screenLines } from './text'
+import type { ScreenLine } from '../protocol/generated'
 
 /** What applying an update did, for the caller that has to react to it. */
 export type Applied =
@@ -31,6 +33,7 @@ export class ScreenStore {
   private rows: RowStore[] = []
   private infoValue: ScreenInfo | null = null
   private cursorValue: Cursor | null = null
+  private readonly contentListeners = new Set<() => void>()
   private readonly geometryListeners = new Set<() => void>()
 
   get info(): ScreenInfo | null {
@@ -62,9 +65,10 @@ export class ScreenStore {
       this.reset(update.info)
       this.epoch = epoch
       for (const line of update.lines) {
-        this.rows[line.row]?.set(line.runs)
+        this.rows[line.row]?.set(line.runs, line.wrapped ?? false)
       }
       this.cursorValue = update.cursor ?? null
+      this.announceContent()
       return { kind: 'reset', info: update.info }
     }
 
@@ -73,9 +77,10 @@ export class ScreenStore {
       // disagreement rather than a lost frame, and it is worth noticing rather than dropping.
       const row = this.rows[line.row]
       if (row === undefined) return { kind: 'desynced' }
-      row.set(line.runs)
+      row.set(line.runs, line.wrapped ?? false)
     }
     this.cursorValue = update.cursor ?? null
+    this.announceContent()
     return { kind: 'patched', rows: update.lines.length }
   }
 
@@ -113,10 +118,11 @@ export class ScreenStore {
   }
 
   /** The whole grid as text — what *copy screen* copies. */
-  text(): string {
-    return this.rows
-      .map((row) => row.text)
-      .join('\n')
-      .replace(/\n+$/, '')
+  text(): string { return plainText(this.lines()) }
+  lines(): ScreenLine[] { return screenLines(this.rows) }
+  readonly subscribeContent = (listener: () => void): (() => void) => {
+    this.contentListeners.add(listener)
+    return () => { this.contentListeners.delete(listener) }
   }
+  private announceContent(): void { for (const listener of this.contentListeners) listener() }
 }

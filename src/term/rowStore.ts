@@ -31,6 +31,7 @@ export type Listener = () => void
 const EMPTY: readonly StyleRun[] = []
 
 export class RowStore {
+  wrapped = false
   private runs: readonly StyleRun[] = EMPTY
   private readonly listeners = new Set<Listener>()
 
@@ -44,7 +45,8 @@ export class RowStore {
     }
   }
 
-  set(runs: readonly StyleRun[]): void {
+  set(runs: readonly StyleRun[], wrapped = false): void {
+    this.wrapped = wrapped
     this.runs = runs
     for (const listener of this.listeners) listener()
   }

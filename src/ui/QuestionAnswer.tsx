@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { FlatList, Pressable, Text, TextInput, useWindowDimensions, View } from 'react-native'
-import type { TaskDetail, TaskQuestion } from '../protocol/generated'
+import type { TaskDetail, TaskQuestion, TaskResponse } from '../protocol/generated'
 import * as registry from '../store/registry'
 import {
   AnswerSubmission,
@@ -13,6 +13,8 @@ import { AttachmentTile } from './AttachmentStrip'
 import { ChipButton } from './ChipButton'
 import { ImageViewer } from './ImageViewer'
 import { T } from './theme'
+import { TaskReferences } from './TaskReferences'
+import type { AnswerDraft } from '../requests/model'
 
 /** Keyed by the displayed question; ordinary board refreshes retain the draft. */
 export function QuestionAnswer({
@@ -24,6 +26,10 @@ export function QuestionAnswer({
   enabled,
   imagesEnabled,
   onRefresh,
+  onSubmit,
+  onOpenTask,
+  draft,
+  onDraftChange,
 }: {
   instance: string
   project: string
@@ -33,14 +39,26 @@ export function QuestionAnswer({
   enabled: boolean
   imagesEnabled: boolean
   onRefresh: () => void
+  onSubmit?: ((answer: TaskResponse) => Promise<void>) | undefined
+  onOpenTask?: (task: string) => void
+  draft?: AnswerDraft
+  onDraftChange?: (draft: AnswerDraft) => void
 }) {
   const { width } = useWindowDimensions()
-  const [text, setText] = useState('')
-  const [selected, setSelected] = useState<string[]>([])
+  const [localText, setLocalText] = useState('')
+  const [localSelected, setLocalSelected] = useState<string[]>([])
+  const text = draft?.text ?? localText
+  const selected = draft?.selected ?? localSelected
+  const setText = (next: string) => { if (onDraftChange !== undefined) onDraftChange({ text: next, selected }); else setLocalText(next) }
+  const setSelected = (next: string[] | ((before: string[]) => string[])) => {
+    const values = typeof next === 'function' ? next(selected) : next
+    if (onDraftChange !== undefined) onDraftChange({ text, selected: values }); else setLocalSelected(values)
+  }
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [viewing, setViewing] = useState<string | null>(null)
   const submission = useRef(new AnswerSubmission()).current
+  const inFlight = useRef(false)
   const images = questionImages(question, detail)
   const options = typeof question === 'string' ? [] : question.options
   const multiple = typeof question !== 'string' && question.selection === 'multiple'
@@ -48,21 +66,22 @@ export function QuestionAnswer({
   const valid = selected.length > 0 || text.trim() !== ''
 
   const send = async () => {
-    if (submission.busy || busy || !enabled || !valid) return
+    if (inFlight.current || submission.busy || busy || !enabled || !valid) return
+    inFlight.current = true
     setBusy(true)
     setError(null)
     try {
       const connection = registry.connectionOf(instance)
       if (connection === undefined) throw new Error('That cide is not connected.')
-      const sent = await submission.send(
+      const sent = onSubmit === undefined ? await submission.send(
         (body) => connection.request(body),
         project,
         task,
         answerPayload(question, text, selected),
-      )
+      ) : (await onSubmit(answerPayload(question, text, selected)), true)
       if (sent) {
-        setText('')
-        setSelected([])
+        if (onDraftChange !== undefined) onDraftChange({ text: '', selected: [] })
+        else { setLocalText(''); setLocalSelected([]) }
         onRefresh()
       }
     } catch (reason) {
@@ -70,6 +89,7 @@ export function QuestionAnswer({
       // A refusal or lost acknowledgement may mean the question changed at the desk.
       onRefresh()
     } finally {
+      inFlight.current = false
       setBusy(false)
     }
   }
@@ -77,7 +97,7 @@ export function QuestionAnswer({
   return (
     <View style={{ gap: 10 }}>
       <Text selectable style={{ color: T.text, lineHeight: 21 }}>
-        {questionText(question)}
+        <TaskReferences text={questionText(question)} onOpenTask={onOpenTask} />
       </Text>
       {options.length > 0 && (
         <>

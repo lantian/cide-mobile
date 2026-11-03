@@ -16,7 +16,8 @@ import { installRandom } from '../src/crypto/random'
 import * as instances from '../src/store/instances'
 import * as registry from '../src/store/registry'
 import * as notify from '../src/notify/driver'
-import { coldStartTarget, targetOf } from '../src/notify/notifier'
+import { coldStartTarget, targetOf, type NotificationTarget } from '../src/notify/notifier'
+import * as choice from '../src/store/projectChoice'
 
 // Before anything else, and at module scope on purpose: Hermes has no `crypto.getRandomValues`,
 // so without this the first handshake fails inside a library three levels down. Installed here
@@ -89,9 +90,12 @@ export default function Layout() {
      * anyway. Routing on the connection would make the common case (the app was already
      * running, the socket is live) wait for a check that is going to pass.
      */
-    const go = (target: { instanceId: string; session: string } | null) => {
+    const go = (target: NotificationTarget | null) => {
       if (target === null || target.instanceId === 'demo') return
-      router.push(`/session/${target.instanceId}/${target.session}`)
+      if ('request' in target) {
+        choice.choose(target.instanceId, target.project)
+        router.push({ pathname: '/instance/[iid]/waiting', params: { iid: target.instanceId, request: target.request } })
+      } else router.push(`/session/${target.instanceId}/${target.session}`)
     }
 
     // A tap that arrived while the app was running.

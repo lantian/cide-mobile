@@ -37,7 +37,7 @@
  * substitutes from the system, which is the same bug through the other door: an italic run in a
  * face with a different advance walks the rest of the line out of the grid.
  */
-import { memo, useEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from 'react'
 import { Keyboard, ScrollView, Text, View, type TextStyle } from 'react-native'
 import { Gesture, GestureDetector } from 'react-native-gesture-handler'
 import type { ScreenColor, StyleRun } from '../../protocol/generated'
@@ -61,6 +61,7 @@ import type { RowStore } from '../rowStore'
 import type { ScreenStore } from '../screenStore'
 import { wrap } from '../wrap'
 import { shapeRow } from '../frame'
+import { colour, runColours, BG } from '../colors'
 
 /**
  * The bundled grid font, by style. See the header — every face here has the same advance, and a
@@ -87,10 +88,8 @@ function faceFor(bold: boolean, italic: boolean): string {
 
 /** Attribute bits, as `cide_ipc::screen::flags` numbers them. */
 const BOLD = 1 << 0
-const DIM = 1 << 1
 const ITALIC = 1 << 2
 const UNDERLINE = 1 << 3
-const INVERSE = 1 << 4
 
 /**
  * The palette, chosen for a five-inch screen rather than copied from the desktop.
@@ -98,39 +97,17 @@ const INVERSE = 1 << 4
  * cide sends an *index*, never a resolved colour, precisely so this can be different: a terminal
  * read at arm's length in daylight wants more contrast than one read at a desk.
  */
-const PALETTE: readonly string[] = [
-  '#1c1f24', '#ff6b6b', '#5ee08a', '#ffd166', '#6db3ff', '#d78bff', '#5fd7d7', '#c9d1d9',
-  '#4b525c', '#ff8787', '#89f0ab', '#ffe08a', '#9fcbff', '#e3adff', '#8ce8e8', '#f0f6fc',
-]
-const FG = '#c9d1d9'
-/** What a border with no colour of its own is drawn in. */
 const RULE_INK = '#30363d'
-const BG = '#0d1117'
 
-function colour(value: ScreenColor | undefined, fallback: string): string {
-  if (value === undefined) return fallback
-  if (value.kind === 'idx') return PALETTE[value.index] ?? fallback
-  return `rgb(${value.r},${value.g},${value.b})`
-}
-
-function styleOf(run: StyleRun, fontSize: number): TextStyle {
+function styleOf(run: StyleRun, fontSize: number, wrapped: boolean): TextStyle {
   const flags = run.flags ?? 0
-  const inverse = (flags & INVERSE) !== 0
-  const fg = colour(run.fg, FG)
-  const bg = colour(run.bg, BG)
   const bold = (flags & BOLD) !== 0
   return {
-    color: inverse ? bg : fg,
-    // A background is only drawn when there is one to draw: a span with `backgroundColor` set to
-    // the page colour still costs a native layer.
-    ...(inverse || run.bg !== undefined ? { backgroundColor: inverse ? fg : bg } : {}),
+    ...runColours(run, wrapped),
     // Weight and slope are a **face**, never `fontWeight`/`fontStyle`: Android does not
     // synthesise either for a custom family, and asking silently substitutes a system face with
-    // a different advance. Bold also keeps its lift in colour, because a bold face alone is a
-    // weak signal at nine points on a phone.
+    // a different advance. ANSI foreground colors remain independent of bold weight.
     fontFamily: faceFor(bold, (flags & ITALIC) !== 0),
-    ...(bold ? { color: inverse ? bg : '#ffffff' } : {}),
-    ...((flags & DIM) !== 0 ? { opacity: 0.6 } : {}),
     ...((flags & UNDERLINE) !== 0 ? { textDecorationLine: 'underline' as const } : {}),
     fontSize,
   }
@@ -181,7 +158,7 @@ export const Line = memo(function Line({ runs, fontSize, lineHeight, budget }: L
       }
     >
       {line.map((run, i) => (
-        <Text key={i} allowFontScaling={false} style={styleOf(run, fontSize)}>
+        <Text key={i} allowFontScaling={false} style={styleOf(run, fontSize, budget !== null)}>
           {run.text}
         </Text>
       ))}
@@ -213,6 +190,28 @@ interface RowProps {
  */
 const Row = memo(function Row({ store, fontSize, lineHeight, budget }: RowProps) {
   const runs = useSyncExternalStore(store.subscribe, store.getSnapshot)
+  return <Line runs={runs} fontSize={fontSize} lineHeight={lineHeight} budget={budget} />
+})
+
+/** Subscribe to each member of a soft-wrap chain as one stable text row. */
+const LogicalRow = memo(function LogicalRow({ stores, fontSize, lineHeight, budget }: { stores: readonly RowStore[]; fontSize: number; lineHeight: number; budget: number | null }) {
+  const subscribe = useCallback((listener: () => void) => {
+    const releases = stores.map((store) => store.subscribe(listener))
+    return () => releases.forEach((release) => release())
+  }, [stores])
+  const snapshot = useMemo(() => {
+    let previous: readonly (readonly StyleRun[])[] = []
+    let value: readonly StyleRun[] = []
+    return () => {
+      const next = stores.map((store) => store.getSnapshot())
+      if (next.length !== previous.length || next.some((runs, i) => runs !== previous[i])) {
+        previous = next
+        value = next.flatMap((runs) => [...runs])
+      }
+      return value
+    }
+  }, [stores])
+  const runs = useSyncExternalStore(subscribe, snapshot, snapshot)
   return <Line runs={runs} fontSize={fontSize} lineHeight={lineHeight} budget={budget} />
 })
 
@@ -337,6 +336,18 @@ export function ScreenView({
     return () => shown.remove()
   }, [])
 
+  const chainKey = () => screen.lines().map((row) => row.wrapped ? '1' : '0').join('')
+  const chains = useSyncExternalStore(screen.subscribeContent, chainKey, chainKey)
+  const groups = useMemo(() => {
+    const out: RowStore[][] = []
+    for (let i = 0; i < (screen.info?.rows ?? 0); i += 1) {
+      const row = screen.row(i)
+      if (row === undefined) continue
+      if (wrapped && i > 0 && chains[i - 1] === '1') out[out.length - 1]!.push(row)
+      else out.push([row])
+    }
+    return out
+  }, [screen, chains, wrapped, screen.info?.rows])
   const lineHeight = Math.round(fontSize * 1.25)
   // The bundled face's own advance, so this is exact rather than empirical — and it is exact for
   // every character in the row, which is the property the bundle was for.
@@ -445,19 +456,11 @@ export function ScreenView({
   const rows = Array.from({ length: info.rows }, (_, i) => i)
   const grid = (
     <View style={{ backgroundColor: BG, paddingVertical: 8 }}>
-      {rows.map((index) => {
-        const store = screen.row(index)
-        if (store === undefined) return null
-        return (
-          <Row
-            key={index}
-            store={store}
-            fontSize={fontSize}
-            lineHeight={lineHeight}
-            budget={budget}
-          />
-        )
-      })}
+      {groups.map((stores, index) => stores.length === 1 ? (
+        <Row key={index} store={stores[0]!} fontSize={fontSize} lineHeight={lineHeight} budget={budget} />
+      ) : (
+        <LogicalRow key={index} stores={stores} fontSize={fontSize} lineHeight={lineHeight} budget={budget} />
+      ))}
     </View>
   )
 

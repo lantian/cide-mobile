@@ -22,6 +22,7 @@ import { T } from '../../../src/ui/theme'
 import { Badge } from '../../../src/ui/Badge'
 import { summary as milestoneSummary } from '../../../src/agents/milestones'
 import type { MilestonesView } from '../../../src/protocol/generated'
+import { decisions } from '../../../src/requests/model'
 
 export default function InstanceScreen() {
   const { iid } = useLocalSearchParams<{ iid: string }>()
@@ -50,12 +51,14 @@ export default function InstanceScreen() {
   const project = choice.resolve(iid, view.projects, choices)
   // Per project, so a chip can say which one is asking for something without being opened.
   const byProject = waitingByProject(view.sessions, view.awaiting)
+  for (const item of decisions(view.userRequests, view.tasks, null)) byProject[item.project] = (byProject[item.project] ?? 0) + 1
   const sessions =
     project === null
       ? view.sessions
       : view.sessions.filter((session) => String(session.project) === project)
   const consoles = consoleCounts(sessions, view.awaiting)
   const waiting = consoles.waiting
+  const pendingDecisions = decisions(view.userRequests, view.tasks, project)
   const roster = choice.forProject(view.roster, project)
   const runs = runCounts(choice.forProject(view.runs, project))
   const counts = taskCounts(choice.forProject(view.tasks, project))
@@ -104,6 +107,8 @@ export default function InstanceScreen() {
             badge={waiting}
             onPress={() => router.push(`/instance/${iid}/consoles`)}
           />
+          <Section title="Waiting for you" detail={pendingDecisions.length === 0 ? 'No pending decisions' : `${pendingDecisions.length} decision${pendingDecisions.length === 1 ? '' : 's'}`}
+            alert={pendingDecisions.length > 0} badge={pendingDecisions.length} onPress={() => router.push(`/instance/${iid}/waiting`)} />
           <Section
             title="Agents"
             detail={
@@ -120,6 +125,7 @@ export default function InstanceScreen() {
             }
             onPress={() => router.push(`/instance/${iid}/agents`)}
           />
+          {registry.connectionOf(iid)?.has('conversations') ? <Section title="Session history" detail="Read past conversations and resume a session" onPress={() => router.push(`/instance/${iid}/history` as never)} /> : null}
           <Section
             title="Tasks"
             detail={

@@ -14,6 +14,7 @@
  */
 import { Pressable, Text, View } from 'react-native'
 import { Line } from './Screen'
+import { logicalLines } from '../text'
 import type { History } from '../history'
 import { T } from '../../ui/theme'
 
@@ -94,9 +95,9 @@ export function HistoryView({
         )}
       </View>
 
-      {history.lines.map((line, index) => (
+      {(budget === null ? history.lines : logicalLines(history.lines)).map((line, index) => (
         <Line
-          key={history.from + index}
+          key={history.from + line.row}
           runs={line.runs}
           fontSize={fontSize}
           lineHeight={lineHeight}

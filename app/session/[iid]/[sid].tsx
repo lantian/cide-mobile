@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import {
   AppState,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -22,24 +23,89 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native'
-import { Stack, useLocalSearchParams } from 'expo-router'
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router'
 import * as registry from '../../../src/store/registry'
 import { nameOf } from '../../../src/store/instanceName'
 import * as notify from '../../../src/notify/driver'
+import { Selection } from '../../../src/term/ui/Selection'
+import { plainText } from '../../../src/term/text'
+import { ConsoleAttachments } from '../../../src/consoles/Attachments'
+import { consoleTitle } from '../../../src/consoles/model'
+import { Conversation } from '../../../src/conversations/Conversation'
+import { askConversation, conversationStore } from '../../../src/conversations/model'
+import { isAIConsole } from '../../../src/consoles/model'
+import { closeConsole } from '../../../src/consoles/close'
 import { ScreenView } from '../../../src/term/ui/Screen'
 import { HistoryView } from '../../../src/term/ui/History'
 import { PAGE } from '../../../src/term/history'
 import { CTRL_BAR, KEY_BAR, PAD, PAGE_BAR, afterChange, type BarKey } from '../../../src/term/keys'
 import { T } from '../../../src/ui/theme'
 import { KindTile, look } from '../../../src/ui/Kind'
-import type { KeyEvent, PermissionPrompt, SessionId } from '../../../src/protocol/generated'
+import type { ConversationSummary, ProjectId, KeyEvent, PermissionPrompt, SessionId } from '../../../src/protocol/generated'
 
 const SIZES = [9, 10, 11, 12, 14] as const
 
 export default function SessionScreen() {
-  const { iid, sid, readOnly } = useLocalSearchParams<{
+  const params = useLocalSearchParams<{ iid: string; sid: string; readOnly?: string; terminal?: string; pane?: string }>()
+  const views = useSyncExternalStore(registry.subscribe, registry.getSnapshot)
+  const view = views.find(v => v.paired.instanceId === params.iid)
+  const found = view?.sessions.find(s => String(s.session) === params.sid && (params.pane === undefined || String(s.pane) === params.pane))
+  const previous = useRef(found)
+  if (found !== undefined) previous.current = found
+  const row = found ?? (String(previous.current?.session) === params.sid ? previous.current : undefined)
+  const foundRun = Object.values(view?.runs ?? {}).flat().find(r => String(r.session) === params.sid)
+  const previousRun = useRef(foundRun)
+  if (foundRun !== undefined) previousRun.current = foundRun
+  const run = foundRun ?? (String(previousRun.current?.session) === params.sid ? previousRun.current : undefined)
+  const [terminal, setTerminal] = useState(params.terminal === '1')
+  const [located, setLocated] = useState<{ key: string; conversation: ConversationSummary } | null>(null)
+  const [lookupError, setLookupError] = useState<string | null>(null)
+  const routeKey = `${params.iid}:${params.sid}`
+  const resolved = located?.key === routeKey ? located.conversation : null
+  const connection = registry.connectionOf(params.iid)
+  const offered = connection?.has('conversations') === true
+  const project = row && isAIConsole(row) ? row.project : run?.project ?? resolved?.project
+  const candidates = JSON.stringify(view?.projects.map(p => p.id) ?? [])
+  const ready = view?.phase === 'ready'
+  const known = row !== undefined || run !== undefined || resolved !== null
+  useEffect(() => {
+    if (!offered || !ready || terminal || known || !connection) return
+    let cancelled = false
+    setLookupError(null)
+    void (async () => {
+      for (const project of JSON.parse(candidates) as ProjectId[]) {
+        try {
+          const response = await askConversation(connection, { action: 'read', project, id: params.sid, followSession: params.sid as SessionId, generation: null, before: null, after: null })
+          if (cancelled) return
+          if (response.action === 'read') {
+            conversationStore(params.iid, String(project), params.sid).accept(response.page)
+            setLocated({ key: routeKey, conversation: response.page.conversation })
+            return
+          }
+        } catch { if (cancelled) return }
+      }
+      if (!cancelled) setLookupError('Session history is unavailable. You can open Terminal to read any retained output.')
+    })()
+    return () => { cancelled = true }
+  }, [offered, ready, terminal, known, connection, candidates, params.sid, params.iid, routeKey])
+  if (!terminal && offered && project !== undefined) {
+    return <Conversation iid={params.iid} project={String(project)} id={params.sid} followSession={params.sid} pane={params.pane} readOnly={params.readOnly === '1'} onTerminal={() => setTerminal(true)} />
+  }
+  if (!terminal && offered && row === undefined) return <View style={{ flex: 1, backgroundColor: T.bg, padding: 16, gap: 12 }}>
+    <Text style={{ color: T.dim }}>{lookupError ?? (ready ? 'Loading session…' : 'Connecting…')}</Text>
+    {lookupError ? <Pressable onPress={() => setTerminal(true)}><Text style={{ color: T.accent }}>Open Terminal</Text></Pressable> : null}
+  </View>
+  return <View style={{ flex: 1 }}>
+    {terminal && offered && project !== undefined ? <Pressable onPress={() => setTerminal(false)} style={{ padding: 12, backgroundColor: T.panel }}><Text style={{ color: T.accent }}>Conversation</Text></Pressable> : null}
+    <TerminalSessionScreen />
+  </View>
+}
+
+function TerminalSessionScreen() {
+  const { iid, sid, readOnly, pane } = useLocalSearchParams<{
     iid: string
     sid: string
+    pane?: string
     readOnly?: string
   }>()
   /**
@@ -55,6 +121,9 @@ export default function SessionScreen() {
    * an agent's console belongs to the agent, and a stray keystroke lands in whatever prompt
    * its harness is sitting at.
    */
+  const router = useRouter()
+  const [snapshot, setSnapshot] = useState<string | null>(null)
+  const [closing, setClosing] = useState(false)
   const watching = readOnly === '1'
   const { width } = useWindowDimensions()
   const [fontSize, setFontSize] = useState<number>(11)
@@ -111,8 +180,8 @@ export default function SessionScreen() {
   const prompt: PermissionPrompt | null = view?.prompts[sid] ?? null
   // The row this console belongs to, for its name and its kind. Absent while the session list
   // is still arriving, and the header degrades to the generic word rather than to a blank.
-  const row = view?.sessions.find((s) => String(s.session) === sid)
-  const it = row === undefined ? null : look(row.kind, row.title)
+  const row = view?.sessions.find((s) => pane === undefined ? String(s.session) === sid : String(s.pane) === pane && String(s.session) === sid)
+  const it = row === undefined ? null : look(row.kind, row.title, row.harness)
   /*
    * Which project's console this is. (M76)
    *
@@ -265,7 +334,7 @@ export default function SessionScreen() {
     >
       <Stack.Screen
         options={{
-          title: row?.tabTitle ?? row?.title ?? 'Session',
+          title: row === undefined ? 'Console' : consoleTitle(row),
           // The same mark the list drew, so opening a row lands on something that looks like
           // the row. Without it the two screens agree about nothing but the title, and the one
           // fact worth carrying across — which of the two kinds of console this is — is exactly
@@ -302,6 +371,19 @@ export default function SessionScreen() {
         }}
       />
 
+      <Selection text={snapshot} onDone={() => setSnapshot(null)} />
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 12, paddingVertical: 8, backgroundColor: T.panel }}>
+        <Pressable onPress={() => {
+          Keyboard.dismiss()
+          setSnapshot(plainText([...(screen.info?.alt ? [] : held.lines), ...screen.lines()]))
+        }}><Text style={{ color: T.accent }}>Select text</Text></Pressable>
+        {!watching && row?.canClose === true && connection?.has('consoleClose') ? (
+          <Pressable disabled={closing} onPress={() => {
+            setClosing(true)
+            void closeConsole(connection, row).then(() => router.back()).catch((e: unknown) => setError(e instanceof Error ? e.message : String(e))).finally(() => setClosing(false))
+          }}><Text style={{ color: T.dim }}>{closing ? 'Closing…' : 'Close console'}</Text></Pressable>
+        ) : null}
+      </View>
       <View
         style={{
           flex: 1,
@@ -374,6 +456,8 @@ export default function SessionScreen() {
       ) : null}
 
       {error !== null ? <Text style={{ color: T.bad, padding: 8 }}>{error}</Text> : null}
+
+      {!watching && connection?.has('consoleUpload') ? <ConsoleAttachments key={`${iid}:${sid}`} connection={connection} session={session} expectScreen={prompt?.digest} /> : null}
 
       {watching ? null : (
       <ScrollView

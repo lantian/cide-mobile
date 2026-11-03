@@ -17,6 +17,7 @@ import * as notify from '../src/notify/driver'
 import { T } from '../src/ui/theme'
 import { Badge } from '../src/ui/Badge'
 import { machineCounts, machineSummary, waitingByProject, waitingIn } from '../src/agents/model'
+import { decisions } from '../src/requests/model'
 
 /**
  * Forget a paired instance, after asking.
@@ -144,6 +145,7 @@ export default function Instances() {
         // (a closed tab parks its child, and a parked child can go on waiting), and counting
         // those here made this badge promise something the screen behind it had nowhere to show.
         const waiting = waitingIn(waitingByProject(view.sessions, view.awaiting), null)
+        const decisionCount = decisions(view.userRequests, view.tasks, null).length
         const counts = machineCounts(view)
         return (
           <Pressable
@@ -158,7 +160,7 @@ export default function Instances() {
               padding: 14,
               borderRadius: 10,
               borderWidth: 1,
-              borderColor: waiting > 0 ? T.warn : T.border,
+              borderColor: waiting + decisionCount > 0 ? T.warn : T.border,
               backgroundColor: T.panel,
               gap: 4,
             }}
@@ -167,7 +169,7 @@ export default function Instances() {
               <Text style={{ color: T.text, fontSize: 17, flex: 1 }} numberOfLines={1}>
                 {nameOf(view.paired)}
               </Text>
-              <Badge count={waiting} />
+              <Badge count={waiting + decisionCount} />
             </View>
             {/* cide's own name under a renamed row. The alias is this phone's; the desktop,
                 its Settings → Remote access and every other device still say this one, and a
@@ -195,6 +197,7 @@ export default function Instances() {
                 {waiting} waiting for you
               </Text>
             ) : null}
+            {decisionCount > 0 && <Text style={{ color: T.warn, fontSize: 13 }}>{decisionCount} pending decision{decisionCount === 1 ? '' : 's'}</Text>}
           </Pressable>
         )
       })}

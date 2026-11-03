@@ -6,6 +6,7 @@
  * sends, so the rules that decide whether a row offers Pause or Resume — the ones that are wrong
  * in a way nobody notices until they press the button — are checked by `agents.test.ts`.
  */
+import { isAIConsole } from '../consoles/model'
 import type {
   AgentRun,
   AwaitingEntry,
@@ -306,11 +307,11 @@ export function machineCounts(view: {
   sessions: readonly RemoteSession[]
   runs: Readonly<Record<string, readonly AgentRun[]>>
   tasks: Readonly<Record<string, readonly TaskRow[]>>
-}): { consoles: number; claudeWorking: number; agentsRunning: number; openTasks: number } {
-  const claudeWorking = view.sessions.filter(
+}): { consoles: number; aiWorking: number; agentsRunning: number; openTasks: number } {
+  const aiWorking = view.sessions.filter(
     // `busy` and nothing else — a console at its prompt or at a permission question is alive and
     // is not working. `consoleCounts` draws the same line for the same reason.
-    (session) => session.kind === 'claude' && session.state.state === 'busy',
+    (session) => isAIConsole(session) && session.state.state === 'busy',
   ).length
   let agentsRunning = 0
   for (const runs of Object.values(view.runs)) agentsRunning += runCounts(runs).running
@@ -320,7 +321,7 @@ export function machineCounts(view: {
       (row) => row.status === 'todo' || row.status === 'doing' || row.status === 'review',
     ).length
   }
-  return { consoles: view.sessions.length, claudeWorking, agentsRunning, openTasks }
+  return { consoles: view.sessions.length, aiWorking, agentsRunning, openTasks }
 }
 
 /**
@@ -335,7 +336,7 @@ export function machineCounts(view: {
 export function machineSummary(counts: ReturnType<typeof machineCounts>): string {
   const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
   return [
-    `${plural(counts.claudeWorking, 'Claude')} running`,
+    `${plural(counts.aiWorking, 'AI console')} running`,
     `${plural(counts.agentsRunning, 'agent')} running`,
     `${plural(counts.openTasks, 'open task')}`,
   ].join(' \u00b7 ')

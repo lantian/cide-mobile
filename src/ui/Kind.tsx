@@ -1,26 +1,8 @@
-/**
- * Telling a Claude console from a shell at a glance. (M76)
- *
- * The list used to say which was which in the small grey line under the title — the pane's own
- * name, `claude` or `bash`, among two other facts in the same size and colour. That is enough to
- * *look up* and not enough to *see*, and these are the two things on the screen least alike:
- * typing into one is a conversation with an agent and typing into the other is a command that
- * runs. Somebody opening the wrong one from a phone finds out by what happens next.
- *
- * So the difference is carried three times over, by the three channels a row has: **colour** (a
- * stripe down the edge and the mark drawn in it), **shape** (a glyph that is not a letter), and
- * **the word**, kept because colour alone is not a thing everybody can read and a monochrome
- * screenshot has to stay legible.
- *
- * The glyphs are plain Unicode rather than an icon set: this app carries no icon font, and
- * adding one for two marks would be a font download on every launch. `✳` is what Claude Code
- * prints as its own spinner and `$` is what a shell prints as its prompt, so neither is an
- * invention of this file.
- */
+/** Shared appearance for AI consoles and ordinary shells. */
 import { Text, View } from 'react-native'
 import { FACES } from '../term/ui/Screen'
 import { T } from './theme'
-import type { PaneKind } from '../protocol/generated'
+import type { Harness, PaneKind } from '../protocol/generated'
 
 export interface Look {
   /** The word, for the meta line and for anybody who cannot use the colour. */
@@ -37,10 +19,11 @@ export interface Look {
  * `bash`, `zsh`, `fish` — and which shell it is, is exactly the thing somebody wants to know
  * about it. Every other kind has one word that is always right.
  */
-export function look(kind: PaneKind, title?: string): Look {
+export function look(kind: PaneKind, title?: string, harness?: Harness): Look {
+  if (harness !== undefined) return { label: 'AI console', glyph: '◇', tint: '#d78bff' }
   switch (kind) {
     case 'claude':
-      return { label: 'Claude', glyph: '✳', tint: '#d78bff' }
+      return { label: 'AI console', glyph: '◇', tint: '#d78bff' }
     case 'shell':
       return { label: title !== undefined && title !== '' ? title : 'Shell', glyph: '$', tint: T.good }
     case 'diff':
@@ -73,7 +56,7 @@ export function KindTile({ look: it, size = 28 }: { look: Look; size?: number })
     >
       <Text
         allowFontScaling={false}
-        // The bundled face rather than the system's: `✳` is not in every phone's monospace,
+        // The bundled face carries the tile glyphs consistently across phones,
         // and a tile whose mark is a tofu box is worse than no tile at all.
         style={{ color: it.tint, fontSize: size * 0.55, fontFamily: FACES.regular }}
       >

@@ -11,13 +11,16 @@
  * and idempotent, and the alternative is a second rule about *when* to ask, which is one more
  * place for a missing notification to come from.
  */
+import { consoleTitle } from '../consoles/model'
 import { AppState } from 'react-native'
 import * as registry from '../store/registry'
 import { nameOf } from '../store/instanceName'
 import { acknowledge, decide, type Ledger, type SessionLabel } from './decide'
-import { apply, dismissFor, prepare } from './notifier'
+import { apply, applyNotices, dismissFor, prepare } from './notifier'
+import { decideRequests, type RequestLedger } from './requests'
 
 let ledger: Ledger = {}
+let requestsLedger: RequestLedger = new Set()
 let running = false
 let allowed = false
 /** The session a screen is showing, so a wait nobody is looking away from stays silent. */
@@ -51,6 +54,7 @@ export function start(): () => void {
   running = true
   void prepare().then((granted) => {
     allowed = granted
+    if (running) void tick()
   })
   const stop = registry.subscribe(() => {
     void tick()
@@ -65,10 +69,14 @@ async function tick(): Promise<void> {
   if (!allowed) return
   const state = AppState.currentState === 'active' ? 'active' : 'background'
   for (const view of registry.getSnapshot()) {
+    const requests = decideRequests(view.paired.instanceId, nameOf(view.paired), Object.fromEntries(view.projects.map((p) => [String(p.id), p.name])), view.userRequests, requestsLedger)
+    // Record before awaiting native APIs: a second registry change must not notify twice.
+    requestsLedger = requests.ledger
+    if (requests.raise.length > 0 || requests.dismiss.length > 0) await applyNotices(requests)
     const labels: Record<string, SessionLabel> = {}
     for (const session of view.sessions) {
       labels[String(session.session)] = {
-        console: session.tabTitle ?? session.title,
+        console: consoleTitle(session),
         project: view.projects.find((p) => p.id === session.project)?.name ?? null,
       }
     }

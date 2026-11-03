@@ -19,10 +19,8 @@
  *
  *  1. **Trailing blanks go.** A terminal pads every row to its full width; at 120 columns and a
  *     budget of 46 that padding alone is two empty display lines under most rows on screen.
- *     Trimming stops at a blank that carries a **background, an underline or the inverse bit**,
- *     which is `cide_pty::screen`'s own rule at the other end of the wire and is there for the
- *     same reason: those are a selection or a highlight, and trimming them frays the right edge
- *     of the one thing being looked at.
+ *     Trimming stops at an underlined blank. Background and inverse padding is removed in
+ *     wrap mode too, so a full-width input fill does not become several empty phone rows.
  *  2. **A row that is nothing but rule characters becomes a rule.** One hairline, at the screen's
  *     width, in the row's own colour — which is what a horizontal border *means*, and it costs
  *     one line instead of three.
@@ -41,7 +39,6 @@ import type { ScreenColor, StyleRun } from '../protocol/generated'
 
 /** Attribute bits that make a blank cell *visible*. `Screen.tsx` numbers them the same way. */
 const UNDERLINE = 1 << 3
-const INVERSE = 1 << 4
 
 /**
  * The characters a horizontal border is made of: the box-drawing lines, their corners and their
@@ -74,17 +71,12 @@ const FENCE = new Set([
  * `rule` carries a colour because a border is often dim or accented and a hairline in the wrong
  * colour is a horizon line through the middle of somebody's output. It is the **wire's** colour,
  * an index or a triple, and never a resolved one: cide sends an index precisely so the palette
- * can be the phone's, and resolving it here would be a second palette — the failure `Screen.tsx`
- * keeps one `PALETTE` to avoid.
+ * can be the phone's, and resolving it here would be a second palette — the duplication `colors.ts`
+ * keeps one palette to avoid.
  */
 export type Shaped =
   | { readonly kind: 'rule'; readonly color: ScreenColor | undefined }
   | { readonly kind: 'runs'; readonly runs: readonly StyleRun[]; readonly fenced: boolean }
-
-function visibleBlank(run: StyleRun): boolean {
-  const flags = run.flags ?? 0
-  return run.bg !== undefined || (flags & UNDERLINE) !== 0 || (flags & INVERSE) !== 0
-}
 
 /** Drop trailing spaces that carry nothing. See rule 1. */
 function trimEnd(runs: readonly StyleRun[]): StyleRun[] {
@@ -92,7 +84,7 @@ function trimEnd(runs: readonly StyleRun[]): StyleRun[] {
   while (out.length > 0) {
     const last = out[out.length - 1]
     if (last === undefined) break
-    if (visibleBlank(last)) break
+    if ((last.flags ?? 0) & UNDERLINE) break
     const trimmed = last.text.replace(/[ \t]+$/u, '')
     if (trimmed === last.text) break
     if (trimmed === '') {

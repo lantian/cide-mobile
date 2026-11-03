@@ -1,8 +1,38 @@
 # cide-mobile
 
 The companion application for [cide](../cide): connect to one or more running instances, see
-which Claude sessions and agent runs are live, open one, read it, type into it, and be told when
+which AI consoles and agent runs are live, open one, read it, type into it, and be told when
 a turn ends.
+
+## Conversation view
+
+AI sessions open as readable conversations for Claude, Codex, Qwen, OpenCode and MiMo.
+The phone loads saved messages, follows completed records every two seconds while working
+and every five seconds while ready, and uses cide’s existing activity states. There is no
+token streaming. Reading stops while the app is backgrounded or the view is closed.
+
+Use **Load earlier messages**, native text selection, **Copy**, and **Copy code** to read
+and reuse output. Tool calls are collapsed; command arguments, results and saved diffs open
+on demand. **Select text** freezes the loaded messages for selection across message boundaries.
+Scrolling up holds your place; **Jump to latest** restores following.
+Conversations open at their latest message. New messages follow while you are at the bottom;
+scrolling away suspends following until you return or use **Jump to latest**. Long-press a message
+paragraph or code block to select text directly.
+
+The composer keeps drafts on the phone until **Send**, including while a harness is working.
+Delivery uses the harness’s native steering or queue behavior. A desktop draft or modal is
+reported instead of overwritten. Failed or uncertain sends keep the draft and are never
+automatically replayed after reconnect. Attachments insert uploaded paths into the draft.
+
+**Session history** lists conversations cide has recorded for the selected project. Opening
+a past session reads its saved history without starting a model turn. **Resume conversation**
+explicitly continues it in a desktop tab, reusing an existing live owner when present. A removed
+working directory can prevent Resume while leaving saved history readable. Agent-owned logs
+remain read-only.
+
+**Terminal** switches back to the existing terminal view for harness menus, unsupported
+approvals, or exact columns. Shells continue to use Terminal. Older cide hosts keep the
+terminal interface until their conversation capabilities are available.
 
 ## What this repository is, and what it depends on
 
@@ -107,8 +137,58 @@ lines again and reads as a box.
 
 Pan mode is untouched, and that is the point of having it: it promises exact columns, so nothing
 here may run there. The tests are in `test/term.test.ts`, and each rule is a silent failure the
-other way — prose mistaken for a border **disappears**, and a trailing blank trimmed when it
-carries a background takes the right edge of somebody's selection with it.
+other way — prose mistaken for a border **disappears**, and soft-wrap spaces must survive until neighboring rows are joined. Wrap mode removes
+background padding and uses dark readable prompt fills; pan mode retains the original fills.
+
+## Consoles from a phone
+
+AI consoles use the common **AI console** label across harnesses and counters; custom tab titles
+stay visible. The list follows cide's main-panel layout, then its tab strip and each tab's pane
+layout. Busy/waiting status never changes that order. Only consoles in ordinary tabs offer
+**Close**. Closing a split removes that console; closing the last pane closes its tab using the
+desktop's normal history and process rules. Every pane of the main tab is protected.
+
+**Attach** offers Files, Photos and Camera. Selected files stream to the console's working
+folder under `.cide/mobile-uploads/<id>/`; Git repositories locally exclude that directory.
+Each file may be up to 32 MB. Progress, cancellation, errors and manual retry are visible.
+A finished upload inserts its quoted path into the current console input without pressing Enter.
+Completed files stay there so the harness can read them later; unfinished uploads are removed
+when cancelled or disconnected. Container consoles report that uploads are unavailable.
+
+**Select text** opens a frozen, selectable snapshot of the current screen and loaded history.
+Long-press and drag the native selection handles across lines, or use **Copy all**. Load more
+history before selecting if you need older output. Copying does not send console input.
+
+The new pickers and clipboard use native modules. After `npm install`, rebuild the Android/iOS
+app; updating only a JavaScript bundle is insufficient. Closing and uploading also require the
+updated cide host, whose capability flags gate these controls on older hosts. Android can use
+the checked-in native project; an iOS prebuild reads the photo/camera permission descriptions
+from `app.json`.
+
+## Questions and approvals
+
+Each instance has **Waiting for you** for standalone agent questions, task questions, user
+acceptance of reviews, and proposed moves from Inbox into a milestone. Desktop cide advertises
+the optional `userRequests` capability; older hosts still support task questions and reviews.
+Questions also appear for projects without a task tracker.
+
+Every decision opens a dialog. Task IDs in question text and proposal rows open task details
+inside it; Back restores the question, selected choices and draft. Close keeps the draft and
+does not answer or cancel. Cancel request explicitly tells the agent that the request was
+cancelled. A move approval sends only selected task IDs; desktop cide validates and applies
+the changes and returns the saved decision to the original conversation.
+
+Answers require a server acknowledgement and are never queued for replay while offline.
+Saved answers show selected labels and feedback while awaiting delivery, then leave Waiting
+when cide confirms delivery. For a nonblocking question the dialog explains that delivery
+waits for the agent's current turn to finish. Notifications open the requested decision,
+including on cold start, and pending decisions return with the first reconnect snapshot.
+
+`npm run check` covers the protocol copy, TypeScript, broker acknowledgements, late revisions,
+notifications, mounted dialog task navigation, drafts, partial approvals, and connection tests
+against the real Rust example server. To build a standalone signed Android APK, use Java 21,
+set `ANDROID_HOME` to the Android SDK, and run `./gradlew assembleRelease` from `android/`.
+The existing signing configuration is retained so the APK can update the previous app.
 
 ## The ceiling, stated up front
 

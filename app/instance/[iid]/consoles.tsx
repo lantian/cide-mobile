@@ -1,11 +1,5 @@
-/**
- * One instance's consoles.
- *
- * Sorted by what is asking for attention, because that is the question this app exists to
- * answer: waiting first, then working, then everything else. A list in workspace order would be
- * correct and would bury the one row worth opening.
- */
-import { useEffect, useSyncExternalStore } from 'react'
+/** One instance’s consoles, in authoritative desktop layout and tab order. */
+import { useEffect, useState, useSyncExternalStore } from 'react'
 import { Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router'
 import * as registry from '../../../src/store/registry'
@@ -17,24 +11,8 @@ import { ProjectSwipe } from '../../../src/ui/ProjectSwipe'
 import { T, stateColour, stateLabel } from '../../../src/ui/theme'
 import { Dot } from '../../../src/ui/Badge'
 import { KindStripe, KindTile, look } from '../../../src/ui/Kind'
-import type { RemoteSession } from '../../../src/protocol/generated'
-
-/** Waiting, then working, then the rest. */
-function rank(session: RemoteSession, waiting: Set<string>): number {
-  if (waiting.has(String(session.session))) return 0
-  switch (session.state.state) {
-    case 'awaitingPermission':
-      return 1
-    case 'awaitingInput':
-      return 2
-    case 'busy':
-      return 3
-    case 'exited':
-      return 6
-    default:
-      return 5
-  }
-}
+import { consoleTitle, consoleRoute, orderedConsoles, isAIConsole } from '../../../src/consoles/model'
+import { closeConsole } from '../../../src/consoles/close'
 
 export default function InstanceScreen() {
   const { iid } = useLocalSearchParams<{ iid: string }>()
@@ -42,6 +20,8 @@ export default function InstanceScreen() {
   const choices = useSyncExternalStore(choice.subscribe, choice.getSnapshot)
   const view = views.find((v) => v.paired.instanceId === iid)
   const router = useRouter()
+  const [error, setError] = useState<string | null>(null)
+  const [closing, setClosing] = useState<string | null>(null)
 
   useEffect(() => {
     // Everything this instance has. Narrowing to one project is what the project screen will do;
@@ -59,9 +39,7 @@ export default function InstanceScreen() {
 
   const waiting = new Set(view.awaiting.map((entry) => String(entry.session)))
   const project = choice.resolve(iid, view.projects, choices)
-  const sessions = view.sessions
-    .filter((session) => project === null || String(session.project) === project)
-    .sort((a, b) => rank(a, waiting) - rank(b, waiting))
+  const sessions = orderedConsoles(view.sessions, project)
   const projects = new Map(view.projects.map((p) => [String(p.id), p.name]))
 
   return (
@@ -86,6 +64,7 @@ export default function InstanceScreen() {
             onChoose={(next) => choice.choose(iid, next)}
           />
 
+          {error === null ? null : <Text style={{ color: T.bad }}>{error}</Text>}
           {view.phase !== 'ready' ? (
             <Text style={{ color: T.warn }}>{view.detail ?? view.phase}</Text>
           ) : null}
@@ -98,11 +77,11 @@ export default function InstanceScreen() {
             const id = String(session.session)
             const marked = waiting.has(id)
             const state = shownState(session.state.state, marked)
-            const it = look(session.kind, session.title)
+            const it = look(session.kind, session.title, session.harness)
             return (
               <Pressable
-                key={id}
-                onPress={() => router.push(`/session/${iid}/${id}`)}
+                key={String(session.pane)}
+                onPress={() => router.push(consoleRoute(iid, session) as never)}
                 style={{
                   flexDirection: 'row',
                   borderRadius: 10,
@@ -118,23 +97,9 @@ export default function InstanceScreen() {
                 <View style={{ flex: 1, padding: 14, gap: 3 }}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                     <KindTile look={it} />
-                    {/* Whose name leads depends on the kind, and getting that wrong renamed
-                        people's shells. (M76)
-
-                        A **Claude** pane calls itself `claude` — every one of them does — so a list
-                        keyed on the pane's own title is a column of identical rows, and the tab is
-                        the only thing that tells them apart. A **shell** is the other way round: it
-                        calls itself `bash`, which is the useful word, while the tab it happens to
-                        sit in is usually named after the Claude console beside it. So every bash
-                        pane in this list was headed *Claude*, which is not a naming quirk — it is
-                        the row claiming to be the thing a person opens to talk to an agent.
-
-                        The tab is still worth saying for a shell, and it is said underneath. */}
+                    {/* AI consoles keep custom tab names; shells keep their own names. */}
                     <Text style={{ color: T.text, fontSize: 16, flex: 1 }} numberOfLines={1}>
-                      {session.kind === 'claude'
-                        ? (session.tabTitle ?? session.title)
-                        : (session.title === '' ? session.tabTitle : session.title) ??
-                          session.title}
+                      {consoleTitle(session)}
                     </Text>
                     {/* The mark stays until the session is opened — and opening it here clears it
                         on the desktop too, through the same set every cide window shares. */}
@@ -159,7 +124,7 @@ export default function InstanceScreen() {
                       // The tab, for a shell whose heading is now its own name — that is where
                       // *which* Claude it sits beside went. Repeating it under a Claude console,
                       // whose heading is already the tab, would be noise.
-                      session.kind !== 'claude' && session.tabTitle !== undefined
+                      !isAIConsole(session) && session.tabTitle !== undefined
                         ? `in ${session.tabTitle}`
                         : undefined,
                       // Shown only when it adds something. A detached pane says so instead.
@@ -170,6 +135,18 @@ export default function InstanceScreen() {
                       .join('')}
                   </Text>
                 </View>
+                {session.canClose === true && registry.connectionOf(iid)?.has('consoleClose') ? (
+                  <Pressable accessibilityLabel={`Close ${consoleTitle(session)}`} disabled={closing !== null}
+                    style={{ padding: 14, justifyContent: 'center' }}
+                    onPress={(event) => {
+                      event.stopPropagation()
+                      setClosing(String(session.pane)); setError(null)
+                      void closeConsole(registry.connectionOf(iid)!, session).catch((e: unknown) => setError(String(e instanceof Error ? e.message : e)))
+                        .finally(() => setClosing(null))
+                    }}>
+                    <Text style={{ color: T.dim }}>{closing === String(session.pane) ? '…' : '×'}</Text>
+                  </Pressable>
+                ) : null}
               </Pressable>
             )
           })}

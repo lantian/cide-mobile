@@ -17,6 +17,9 @@
 import * as Notifications from 'expo-notifications'
 import { Platform } from 'react-native'
 import type { Decision, Ledger } from './decide'
+import type { RequestNotice, RequestTarget } from './requests'
+
+export type NotificationTarget = { instanceId: string; session: string } | RequestTarget
 
 /**
  * Channels are created **before** permission is asked.
@@ -57,6 +60,11 @@ export async function prepare(): Promise<boolean> {
  * wait on the same session is a genuinely new one.
  */
 export async function apply(decision: Decision): Promise<Ledger> {
+  await applyNotices(decision)
+  return decision.ledger
+}
+
+export async function applyNotices(decision: { dismiss: readonly string[]; raise: readonly (Decision['raise'][number] | RequestNotice)[] }): Promise<void> {
   for (const id of decision.dismiss) {
     await Notifications.dismissNotificationAsync(id).catch(() => undefined)
   }
@@ -74,7 +82,6 @@ export async function apply(decision: Decision): Promise<Ledger> {
       trigger: null,
     }).catch(() => undefined)
   }
-  return decision.ledger
 }
 
 /**
@@ -110,9 +117,7 @@ export async function dismissFor(session: string): Promise<void> {
  */
 let coldStartHandled = false
 
-export async function coldStartTarget(): Promise<
-  { instanceId: string; session: string } | null
-> {
+export async function coldStartTarget(): Promise<NotificationTarget | null> {
   if (coldStartHandled) return null
   coldStartHandled = true
   const response = await Notifications.getLastNotificationResponseAsync()
@@ -121,10 +126,13 @@ export async function coldStartTarget(): Promise<
 
 export function targetOf(
   response: Notifications.NotificationResponse | null,
-): { instanceId: string; session: string } | null {
+): NotificationTarget | null {
   const data = response?.notification.request.content.data
   if (data === undefined || data === null) return null
   const instanceId = (data as Record<string, unknown>)['instanceId']
+  const project = (data as Record<string, unknown>)['project']
+  const request = (data as Record<string, unknown>)['request']
+  if (typeof instanceId === 'string' && typeof project === 'string' && typeof request === 'string') return { instanceId, project, request }
   const session = (data as Record<string, unknown>)['session']
   if (typeof instanceId !== 'string' || typeof session !== 'string') return null
   return { instanceId, session }

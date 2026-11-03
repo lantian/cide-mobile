@@ -28,6 +28,7 @@ import { fromBase64Url, fromHex } from '../src/crypto/seal'
 import { PROTOCOL_VERSION } from '../src/protocol/version'
 import type { ClientBody, ServerBody } from '../src/protocol/generated'
 import { HistoryStore, PAGE, historyText } from '../src/term/history'
+import { uploadFile, quotePath } from '../src/consoles/upload'
 import { download } from '../src/attachments/fetchChunks'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -113,6 +114,32 @@ afterAll(() => {
 })
 
 describe.skipIf(!available)('against a real cide', () => {
+  it('reads and follows a conversation, acknowledges send once, and resumes over the sealed wire', { timeout: 240_000 }, async () => {
+    const ready = await start()
+    const connection = new Connection({ paired: { instanceId: 'i-example', label: 'example', hosts: [`127.0.0.1:${ready.port}`], deviceId: ready.device, serverPublic: fromHex(ready.serverPublic), key: fromHex(ready.key) }, dial: wsDial, onEvent: () => undefined })
+    connection.start()
+    try {
+      await untilReady(connection)
+      const { askConversation } = await import('../src/conversations/model')
+      const project = '00000000-0000-4000-8000-000000000001'
+      expect(connection.has('conversations')).toBe(true)
+      const listing = await askConversation(connection, { action: 'list', project })
+      if (listing.action !== 'list') throw new Error('no conversations')
+      const conversation = listing.conversations[0]!
+      const initial = await askConversation(connection, { action: 'read', project, id: conversation.id, generation: null, before: null, after: null })
+      if (initial.action !== 'read') throw new Error('no history')
+      expect(initial.page.items[0]?.text).toBe('Hello from saved history')
+      const request = { action: 'send' as const, project, id: conversation.id, session: conversation.session!, operation: 'mobile-wire-operation', text: 'hello\n世界' }
+      await expect(askConversation(connection, request)).resolves.toMatchObject({ action: 'receipt', status: 'submitted' })
+      await expect(askConversation(connection, request)).resolves.toMatchObject({ action: 'receipt', status: 'submitted' })
+      const update = await askConversation(connection, { action: 'read', project, id: conversation.id, generation: initial.page.generation, before: null, after: initial.page.after })
+      if (update.action !== 'read') throw new Error('no updates')
+      expect(update.page.items).toHaveLength(1)
+      expect(update.page.items[0]?.text).toBe('hello\n世界')
+      await expect(askConversation(connection, { action: 'resume', project, id: conversation.id, operation: 'mobile-resume-operation' })).resolves.toMatchObject({ action: 'receipt', session: conversation.session })
+      await expect(askConversation(connection, { action: 'list', project: '00000000-0000-4000-8000-000000000002' })).rejects.toThrow('no such project')
+    } finally { connection.stop() }
+  })
   it('is welcomed, served the board, and repaints a screen', { timeout: 240_000 }, async () => {
     const ready = await start()
 
@@ -164,6 +191,41 @@ describe.skipIf(!available)('against a real cide', () => {
     expect(JSON.stringify(screen)).toContain('hello from cide')
 
     connection.stop()
+  })
+
+  it('uploads a phone file, inserts it without Enter, and closes only eligible consoles', { timeout: 240_000 }, async () => {
+    const ready = await start()
+    const events: ServerBody[] = []
+    const connection = new Connection({ paired: {
+      instanceId: 'i-example', label: 'example', hosts: [`127.0.0.1:${ready.port}`], deviceId: ready.device,
+      serverPublic: fromHex(ready.serverPublic), key: fromHex(ready.key),
+    }, dial: wsDial, onEvent: (body) => events.push(body) })
+    connection.start()
+    try {
+      await untilReady(connection)
+      await settle(200)
+      const frame = events.find((body) => body.t === 'sessions')
+      if (frame?.t !== 'sessions') throw new Error('no console snapshot')
+      const main = frame.sessions[0]!, tab = frame.sessions.find((row) => row.canClose === true)!
+      expect(main.location).toBe('main')
+      expect(tab.location).toBe('tab')
+      expect(connection.has('consoleUpload')).toBe(true)
+      const bytes = Buffer.from('phone attachment contents')
+      const path = await uploadFile((body) => connection.request(body), main.session, {
+        name: 'phone file.txt', size: bytes.length,
+        read: async (offset, length) => bytes.subarray(offset, offset + length).toString('base64'),
+      })
+      const { readFile } = await import('node:fs/promises')
+      expect(await readFile(path, 'utf8')).toBe('phone attachment contents')
+      const seq = connection.nextSeq()
+      await expect(connection.request({ t: 'paste', session: main.session, text: quotePath(path), seq })).resolves.toMatchObject({ t: 'pasteAccepted', seq })
+      connection.watch(main.session)
+      await settle(250)
+      expect(JSON.stringify(events.filter((body) => body.t === 'screen'))).toContain('phone file.txt')
+      await expect(connection.request({ t: 'consoleClose', project: main.project, pane: main.pane, session: main.session })).resolves.toMatchObject({ t: 'error' })
+      await expect(connection.request({ t: 'consoleClose', project: tab.project, pane: tab.pane, session: tab.session })).resolves.toMatchObject({ t: 'consoleClosed', pane: tab.pane })
+      await expect(connection.request({ t: 'consoleClose', project: tab.project, pane: tab.pane, session: main.session })).resolves.toMatchObject({ t: 'error' })
+    } finally { connection.stop() }
   })
 
   /**

@@ -27,8 +27,8 @@
  * The one option, and the same one cide's card passes. A comment is a message, not a `.md` file:
  * an agent reporting five numbered steps one per line must not arrive as one wall of prose.
  */
-import { memo } from 'react'
-import { Text, View } from 'react-native'
+import { memo, useState } from 'react'
+import { Pressable, Text, View } from 'react-native'
 import { parseMarkdown } from '../markdown/blocks'
 import type { Block, Inline, ListItem } from '../markdown/types'
 import { T } from './theme'
@@ -37,22 +37,26 @@ import { FACES } from '../term/ui/Screen'
 /** Heading sizes, biggest first. A card is 360 points wide; `#` is not a poster. */
 const HEADING = [19, 17, 16, 15, 14, 14]
 
-export const Markdown = memo(function Markdown({ text }: { text: string }) {
+export const Markdown = memo(function Markdown({ text, selectable = false, copyCode = false }: { text: string; selectable?: boolean; copyCode?: boolean }) {
   const doc = parseMarkdown(text, { softBreak: 'break' })
-  return <View style={{ gap: 8 }}>{doc.blocks.map((block, i) => renderBlock(block, `b${i}`))}</View>
+  // Android's accessible prop controls TextView focusability. Set it explicitly
+  // with selectable so the default cannot disable native long-press selection.
+  return <View style={{ gap: 8 }}>{doc.blocks.map((block, i) => renderBlock(block, `b${i}`, selectable, copyCode))}</View>
 })
 
-function renderBlock(block: Block, key: string) {
+function renderBlock(block: Block, key: string, selectable = false, copyCode = false) {
   switch (block.kind) {
     case 'paragraph':
       return (
-        <Text key={key} style={{ color: T.text, lineHeight: 21 }}>
+        <Text accessible={selectable || undefined} selectable={selectable} key={key} style={{ color: T.text, lineHeight: 21 }}>
           {inlines(block.body, key)}
         </Text>
       )
     case 'heading':
       return (
         <Text
+          accessible={selectable || undefined}
+          selectable={selectable}
           key={key}
           style={{
             color: T.text,
@@ -78,9 +82,7 @@ function renderBlock(block: Block, key: string) {
             padding: 8,
           }}
         >
-          <Text style={{ color: T.text, fontFamily: FACES.regular, fontSize: 12 }}>
-            {block.text.replace(/\n$/, '')}
-          </Text>
+          <Code text={block.text.replace(/\n$/, '')} selectable={selectable} copy={copyCode} />
         </View>
       )
     case 'quote':
@@ -89,7 +91,7 @@ function renderBlock(block: Block, key: string) {
           key={key}
           style={{ borderLeftWidth: 2, borderColor: T.border, paddingLeft: 10, gap: 6 }}
         >
-          {block.body.map((child: Block, i: number) => renderBlock(child, `${key}.${i}`))}
+          {block.body.map((child: Block, i: number) => renderBlock(child, `${key}.${i}`, selectable, copyCode))}
         </View>
       )
     case 'list':
@@ -101,6 +103,8 @@ function renderBlock(block: Block, key: string) {
               item={item}
               marker={block.ordered ? `${block.start + i}.` : '\u2022'}
               keyBase={`${key}.${i}`}
+              selectable={selectable}
+              copyCode={copyCode}
             />
           ))}
         </View>
@@ -115,7 +119,7 @@ function renderBlock(block: Block, key: string) {
       return (
         <View key={key} style={{ gap: 2 }}>
           {[{ cells: block.head }, ...block.rows].map((row, i) => (
-            <Text key={`${key}.${i}`} style={{ color: i === 0 ? T.dim : T.text, lineHeight: 20 }}>
+            <Text accessible={selectable || undefined} selectable={selectable} key={`${key}.${i}`} style={{ color: i === 0 ? T.dim : T.text, lineHeight: 20 }}>
               {row.cells.map((cell: readonly Inline[], c: number) => (
                 <Text key={c}>
                   {c === 0 ? '' : '  ·  '}
@@ -135,10 +139,14 @@ function Item({
   item,
   marker,
   keyBase,
+  selectable,
+  copyCode,
 }: {
   item: ListItem
   marker: string
   keyBase: string
+  selectable: boolean
+  copyCode: boolean
 }) {
   return (
     <View style={{ flexDirection: 'row', gap: 8 }}>
@@ -146,7 +154,7 @@ function Item({
         {item.checked === null || item.checked === undefined ? marker : item.checked ? '☑' : '☐'}
       </Text>
       <View style={{ flex: 1, gap: 4 }}>
-        {item.body.map((child: Block, i: number) => renderBlock(child, `${keyBase}.${i}`))}
+        {item.body.map((child: Block, i: number) => renderBlock(child, `${keyBase}.${i}`, selectable, copyCode))}
       </View>
     </View>
   )
@@ -202,4 +210,13 @@ function renderInline(node: Inline, key: string) {
     default:
       return null
   }
+}
+
+function Code({ text, selectable, copy }: { text: string; selectable: boolean; copy: boolean }) {
+  const [error, setError] = useState(false)
+  return <View style={{ gap: 8 }}>
+    <Text accessible={selectable || undefined} selectable={selectable} style={{ color: T.text, fontFamily: FACES.regular, fontSize: 12 }}>{text}</Text>
+    {copy ? <Pressable onPress={() => { void import('expo-clipboard').then(Clipboard => Clipboard.setStringAsync(text)).then(() => setError(false)).catch(() => setError(true)) }}><Text style={{ color: T.accent }}>Copy code</Text></Pressable> : null}
+    {error ? <Text style={{ color: T.bad }}>Could not copy this code.</Text> : null}
+  </View>
 }

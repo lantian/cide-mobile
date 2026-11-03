@@ -14,6 +14,7 @@ import { clientInfo } from '../device'
 import type {
   AgentRun,
   AwaitingEntry,
+  UserRequestsView,
   MilestonesView,
   PermissionPrompt,
   RemoteAgent,
@@ -25,6 +26,7 @@ import type {
 } from '../protocol/generated'
 import { ScreenStore } from '../term/screenStore'
 import { HistoryStore } from '../term/history'
+import { newerRequests } from '../requests/model'
 
 export interface InstanceView {
   readonly paired: Paired
@@ -79,6 +81,7 @@ export interface InstanceView {
    */
   readonly dispatching: Readonly<Record<string, boolean>>
   readonly tasks: Readonly<Record<string, readonly TaskRow[]>>
+  readonly userRequests: Readonly<Record<string, UserRequestsView | null>>
   /**
    * Each subscribed project's milestones, gates and their state. (M91) `null` is a project with
    * none — said by cide, so a project that has none and one not heard from yet can differ.
@@ -146,6 +149,15 @@ export function connectionOf(instanceId: string): Connection | undefined {
   return entries.get(instanceId)?.connection
 }
 
+export function adoptUserRequests(instanceId: string, project: string, view: UserRequestsView | null): void {
+  const entry = entries.get(instanceId)
+  if (entry === undefined) return
+  const next = newerRequests(entry.view.userRequests[project], view)
+  if (next === entry.view.userRequests[project]) return
+  entry.view = { ...entry.view, userRequests: { ...entry.view.userRequests, [project]: next } }
+  announce()
+}
+
 /** The grid for one session, created on first ask. */
 export function screenOf(instanceId: string, session: string): ScreenStore {
   const entry = entries.get(instanceId)
@@ -203,6 +215,7 @@ export function open(paired: Paired): void {
       projects: [],
       sessions: [],
       awaiting: [],
+      userRequests: {},
       prompts: {},
       runs: {},
       roster: {},
@@ -313,6 +326,9 @@ function receive(instanceId: string, body: ServerBody): void {
         tasks: { ...entry.view.tasks, [String(body.project)]: body.tasks },
       }
       break
+    case 'userRequests':
+      adoptUserRequests(instanceId, String(body.project), body.view ?? null)
+      return
     case 'milestones':
       entry.view = {
         ...entry.view,

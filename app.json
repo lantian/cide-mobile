@@ -30,7 +30,7 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "cide uses the camera once, to read the pairing code shown on your computer. No photo is saved and nothing leaves the phone.",
+          "cameraPermission": "cide uses the camera to scan pairing codes and take photos you choose to attach to a console.",
           "recordAudioAndroid": false
         }
       ],
@@ -39,6 +39,14 @@
         {
           "icon": "./assets/monochrome-icon.png",
           "color": "#e76831"
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "cide uses photos you select to attach images to a console on your computer.",
+          "cameraPermission": "cide uses the camera to scan pairing codes and take photos you choose to attach to a console.",
+          "microphonePermission": false
         }
       ]
     ],

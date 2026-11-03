@@ -254,7 +254,7 @@ describe('wrap', () => {
     // Slicing between the halves of a surrogate pair produces a replacement character, which is
     // a visibly broken glyph rather than a narrower line.
     const lines = wrap([run('😀😀😀')], 2)
-    expect(lines.map((l) => l.map((r) => r.text).join(''))).toEqual(['😀😀', '😀'])
+    expect(lines.map((l) => l.map((r) => r.text).join(''))).toEqual(['😀', '😀', '😀'])
   })
 
   it('agrees with its own height function', () => {
@@ -443,11 +443,12 @@ describe('shaping a box row', () => {
    * The other half of that rule, and the one that costs the user something: a trailing blank
    * with a background is a selection, and trimming it frays the edge of what they are reading.
    */
-  it('keeps a trailing blank that is visible', () => {
+  it('trims highlighted padding in wrap mode but preserves it in pan mode', () => {
     const selected = r('    ', { bg: { kind: 'idx', index: 4 } as never })
     const shaped = shapeRow([r('hello'), selected], true)
     if (shaped.kind !== 'runs') throw new Error('runs')
-    expect(shaped.runs.map((run) => run.text).join('')).toBe('hello    ')
+    expect(shaped.runs.map((run) => run.text).join('')).toBe('hello')
+    expect(shapeRow([r('hello'), selected], false)).toEqual({ kind: 'runs', runs: [r('hello'), selected], fenced: false })
   })
 })
 

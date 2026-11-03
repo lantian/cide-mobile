@@ -423,7 +423,7 @@ describe('what a machine is doing', () => {
 
   it('counts a working Claude, not every console', () => {
     // A shell that is busy is not a Claude thinking, and a Claude at its prompt is not working.
-    expect(machineCounts(view).claudeWorking).toBe(1)
+    expect(machineCounts(view).aiWorking).toBe(1)
     expect(machineCounts(view).consoles).toBe(3)
   })
 
@@ -439,12 +439,12 @@ describe('what a machine is doing', () => {
 
   it('draws every part even at zero', () => {
     const quiet = machineCounts({ sessions: [], runs: {}, tasks: {} })
-    expect(machineSummary(quiet)).toBe('0 Claudes running · 0 agents running · 0 open tasks')
+    expect(machineSummary(quiet)).toBe('0 AI consoles running · 0 agents running · 0 open tasks')
   })
 
   it('says one of each in the singular', () => {
-    const one = { claudeWorking: 1, agentsRunning: 1, openTasks: 1, consoles: 1 }
-    expect(machineSummary(one)).toBe('1 Claude running · 1 agent running · 1 open task')
+    const one = { aiWorking: 1, agentsRunning: 1, openTasks: 1, consoles: 1 }
+    expect(machineSummary(one)).toBe('1 AI console running · 1 agent running · 1 open task')
   })
 })
 
